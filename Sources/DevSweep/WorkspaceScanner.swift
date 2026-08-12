@@ -62,6 +62,7 @@ struct WorkspaceScanner: Sendable {
 
     func scanWorkspace(_ workspaceURL: URL) -> Workspace {
         let root = workspaceURL.standardizedFileURL
+        let git = gitMetadata(at: root)
         var candidates: [CleanupCandidate] = []
         let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .nameKey]
 
@@ -102,7 +103,9 @@ struct WorkspaceScanner: Sendable {
         return Workspace(
             url: root,
             name: root.lastPathComponent,
-            branch: gitBranch(at: root),
+            branch: git.branch,
+            repositoryID: git.commonDirectory.path,
+            repositoryName: git.repositoryName,
             candidates: candidates.sorted { $0.allocatedBytes > $1.allocatedBytes }
         )
     }
@@ -111,7 +114,7 @@ struct WorkspaceScanner: Sendable {
         fileManager.fileExists(atPath: url.appendingPathComponent(".git").path)
     }
 
-    private func gitBranch(at workspaceURL: URL) -> String {
+    private func gitMetadata(at workspaceURL: URL) -> (branch: String, commonDirectory: URL, repositoryName: String) {
         let marker = workspaceURL.appendingPathComponent(".git")
         var gitDirectory = marker
         var isDirectory: ObjCBool = false
@@ -123,15 +126,28 @@ struct WorkspaceScanner: Sendable {
             gitDirectory = URL(fileURLWithPath: rawPath, relativeTo: workspaceURL).standardizedFileURL
         }
 
+        var commonDirectory = gitDirectory
+        let commonDirectoryMarker = gitDirectory.appendingPathComponent("commondir")
+        if let rawCommonDirectory = try? String(contentsOf: commonDirectoryMarker, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawCommonDirectory.isEmpty {
+            commonDirectory = URL(fileURLWithPath: rawCommonDirectory, relativeTo: gitDirectory).standardizedFileURL
+        }
+
+        let repositoryRoot = commonDirectory.lastPathComponent == ".git"
+            ? commonDirectory.deletingLastPathComponent()
+            : workspaceURL
+        let repositoryName = repositoryRoot.lastPathComponent
+
         let headURL = gitDirectory.appendingPathComponent("HEAD")
         guard let head = try? String(contentsOf: headURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) else {
-            return "Unknown branch"
+            return ("Unknown branch", commonDirectory, repositoryName)
         }
 
         if head.hasPrefix("ref: refs/heads/") {
-            return String(head.dropFirst("ref: refs/heads/".count))
+            return (String(head.dropFirst("ref: refs/heads/".count)), commonDirectory, repositoryName)
         }
-        return "Detached · \(head.prefix(8))"
+        return ("Detached · \(head.prefix(8))", commonDirectory, repositoryName)
     }
 
     private func allocatedSize(of directory: URL) -> Int64 {

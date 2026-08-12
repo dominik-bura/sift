@@ -130,6 +130,10 @@ struct ContentView: View {
             HStack {
                 Text("WORKTREES").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
+                Button("Deselect all") { model.deselectAll() }
+                    .disabled(model.selectedCandidateIDs.isEmpty)
+                Button("Select all") { model.selectAll() }
+                    .disabled(model.selectedCandidateIDs.count == model.candidates.count)
                 Text("\(model.workspaces.count)").font(.caption).foregroundStyle(.tertiary)
             }
 
@@ -145,9 +149,35 @@ struct ContentView: View {
                     .padding(.vertical, 6)
                 }
             } else {
-                ForEach(model.workspaces) { workspace in
-                    workspaceCard(workspace)
+                ForEach(model.repositoryGroups) { repository in
+                    repositorySection(repository)
                 }
+            }
+        }
+    }
+
+    private func repositorySection(_ repository: RepositoryGroup) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Image(systemName: "books.vertical.fill")
+                    .foregroundStyle(.secondary)
+                Text(repository.name)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                if repository.workspaces.count > 1 {
+                    Text("\(repository.workspaces.count) worktrees")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(ByteFormatting.string(repository.reclaimableBytes))
+                    .font(.caption.weight(.medium).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 4)
+
+            ForEach(repository.workspaces) { workspace in
+                workspaceCard(workspace)
             }
         }
     }
@@ -156,6 +186,19 @@ struct ContentView: View {
         Card {
             DisclosureGroup {
                 VStack(spacing: 0) {
+                    HStack {
+                        Text("\(workspace.candidates.count) generated folder\(workspace.candidates.count == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Deselect all") { model.toggleWorkspace(workspace, selected: false) }
+                            .disabled(workspace.candidates.allSatisfy { !model.selectedCandidateIDs.contains($0.id) })
+                        Button("Select all") { model.toggleWorkspace(workspace, selected: true) }
+                            .disabled(workspace.candidates.allSatisfy { model.selectedCandidateIDs.contains($0.id) })
+                    }
+                    .padding(.top, 8)
+                    .padding(.bottom, 4)
+
                     ForEach(workspace.candidates) { candidate in
                         Divider().padding(.leading, 28)
                         Toggle(isOn: Binding(

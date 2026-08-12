@@ -36,10 +36,23 @@ struct Workspace: Identifiable, Hashable, Sendable {
     let url: URL
     let name: String
     let branch: String
+    let repositoryID: String
+    let repositoryName: String
     let candidates: [CleanupCandidate]
 
     var reclaimableBytes: Int64 {
         candidates.reduce(0) { $0 + $1.allocatedBytes }
+    }
+}
+
+struct RepositoryGroup: Identifiable, Hashable, Sendable {
+    var id: String { repositoryID }
+    let repositoryID: String
+    let name: String
+    let workspaces: [Workspace]
+
+    var reclaimableBytes: Int64 {
+        workspaces.reduce(0) { $0 + $1.reclaimableBytes }
     }
 }
 

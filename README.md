@@ -2,7 +2,7 @@
 
 DevSweep is a small native macOS menu-bar app for reclaiming developer storage without deleting projects.
 
-It discovers Git worktrees below configured folders, measures regenerable dependency and build directories, shows the current branch and exact paths, and lets you choose what to move to macOS Trash. It also reports reclaimable Docker image storage and can prune unused images.
+It discovers Git worktrees below configured folders, groups linked worktrees by their shared repository, measures regenerable dependency and build directories, shows the current branch and exact paths, and lets you select globally, per worktree, or per folder before moving anything to macOS Trash. It also reports reclaimable Docker image storage and can prune unused images.
 
 ## Safety model
 

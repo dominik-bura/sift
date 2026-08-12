@@ -41,7 +41,7 @@ final class CleanupSafetyTests: XCTestCase {
         try "keep".write(to: workspaceURL.appendingPathComponent("source.swift"), atomically: true, encoding: .utf8)
 
         let candidate = CleanupCandidate(url: candidateURL, kind: CleanupKind.byDirectoryName[".next"]!, allocatedBytes: 4)
-        let workspace = Workspace(url: workspaceURL, name: "project", branch: "main", candidates: [candidate])
+        let workspace = testWorkspace(url: workspaceURL, candidates: [candidate])
         let result = CleanupService(trashService: TestTrashService(destination: trashURL)).remove([candidate], from: [workspace])
 
         XCTAssertEqual(result.trashed, [candidate])
@@ -55,7 +55,7 @@ final class CleanupSafetyTests: XCTestCase {
         let workspaceURL = temporaryRoot.appendingPathComponent("node_modules", isDirectory: true)
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
         let candidate = CleanupCandidate(url: workspaceURL, kind: CleanupKind.byDirectoryName["node_modules"]!, allocatedBytes: 0)
-        let workspace = Workspace(url: workspaceURL, name: "node_modules", branch: "main", candidates: [candidate])
+        let workspace = testWorkspace(url: workspaceURL, candidates: [candidate])
 
         XCTAssertThrowsError(try CleanupService().validate(candidate: candidate, in: workspace)) { error in
             XCTAssertEqual(error as? CleanupSafetyError, .workspaceItself)
@@ -69,7 +69,7 @@ final class CleanupSafetyTests: XCTestCase {
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
         let candidate = CleanupCandidate(url: outside, kind: CleanupKind.byDirectoryName["node_modules"]!, allocatedBytes: 0)
-        let workspace = Workspace(url: workspaceURL, name: "project", branch: "main", candidates: [candidate])
+        let workspace = testWorkspace(url: workspaceURL, candidates: [candidate])
 
         XCTAssertThrowsError(try CleanupService().validate(candidate: candidate, in: workspace)) { error in
             XCTAssertEqual(error as? CleanupSafetyError, .outsideWorkspace)
@@ -89,7 +89,7 @@ final class CleanupSafetyTests: XCTestCase {
         )
         let linkedCandidate = workspaceURL.appendingPathComponent("linked/node_modules", isDirectory: true)
         let candidate = CleanupCandidate(url: linkedCandidate, kind: CleanupKind.byDirectoryName["node_modules"]!, allocatedBytes: 0)
-        let workspace = Workspace(url: workspaceURL, name: "project", branch: "main", candidates: [candidate])
+        let workspace = testWorkspace(url: workspaceURL, candidates: [candidate])
 
         XCTAssertThrowsError(try CleanupService().validate(candidate: candidate, in: workspace)) { error in
             XCTAssertEqual(error as? CleanupSafetyError, .outsideWorkspace)
@@ -117,6 +117,37 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(
             DockerService.userFacingError("permission denied while trying to connect"),
             "Docker is running, but DevSweep cannot access it"
+        )
+    }
+
+    func testLinkedWorktreesShareRepositoryIdentity() throws {
+        let main = temporaryRoot.appendingPathComponent("example", isDirectory: true)
+        let linked = temporaryRoot.appendingPathComponent("linked-example", isDirectory: true)
+        let linkedGitDirectory = main.appendingPathComponent(".git/worktrees/linked-example", isDirectory: true)
+        try FileManager.default.createDirectory(at: linkedGitDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: linked.appendingPathComponent("node_modules"), withIntermediateDirectories: true)
+        try "ref: refs/heads/main\n".write(to: main.appendingPathComponent(".git/HEAD"), atomically: true, encoding: .utf8)
+        try "ref: refs/heads/feature/grouping\n".write(to: linkedGitDirectory.appendingPathComponent("HEAD"), atomically: true, encoding: .utf8)
+        try "../..\n".write(to: linkedGitDirectory.appendingPathComponent("commondir"), atomically: true, encoding: .utf8)
+        try "gitdir: \(linkedGitDirectory.path)\n".write(to: linked.appendingPathComponent(".git"), atomically: true, encoding: .utf8)
+
+        let scanner = WorkspaceScanner()
+        let mainWorkspace = scanner.scanWorkspace(main)
+        let linkedWorkspace = scanner.scanWorkspace(linked)
+
+        XCTAssertEqual(mainWorkspace.repositoryID, linkedWorkspace.repositoryID)
+        XCTAssertEqual(linkedWorkspace.repositoryName, "example")
+        XCTAssertEqual(linkedWorkspace.branch, "feature/grouping")
+    }
+
+    private func testWorkspace(url: URL, candidates: [CleanupCandidate]) -> Workspace {
+        Workspace(
+            url: url,
+            name: url.lastPathComponent,
+            branch: "main",
+            repositoryID: url.appendingPathComponent(".git").path,
+            repositoryName: url.lastPathComponent,
+            candidates: candidates
         )
     }
 }

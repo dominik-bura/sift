@@ -28,6 +28,20 @@ final class AppModel: ObservableObject {
     var selectedCandidates: [CleanupCandidate] { candidates.filter { selectedCandidateIDs.contains($0.id) } }
     var selectedBytes: Int64 { selectedCandidates.reduce(0) { $0 + $1.allocatedBytes } }
     var totalReclaimableBytes: Int64 { workspaces.reduce(0) { $0 + $1.reclaimableBytes } + dockerState.reclaimableBytes }
+    var repositoryGroups: [RepositoryGroup] {
+        Dictionary(grouping: workspaces, by: \.repositoryID)
+            .map { repositoryID, workspaces in
+                RepositoryGroup(
+                    repositoryID: repositoryID,
+                    name: workspaces.first?.repositoryName ?? "Repository",
+                    workspaces: workspaces.sorted { $0.reclaimableBytes > $1.reclaimableBytes }
+                )
+            }
+            .sorted {
+                if $0.reclaimableBytes == $1.reclaimableBytes { return $0.name < $1.name }
+                return $0.reclaimableBytes > $1.reclaimableBytes
+            }
+    }
 
     func scan() {
         guard !isScanning else { return }
@@ -112,6 +126,14 @@ final class AppModel: ObservableObject {
             if selected { selectedCandidateIDs.insert(candidate.id) }
             else { selectedCandidateIDs.remove(candidate.id) }
         }
+    }
+
+    func selectAll() {
+        selectedCandidateIDs = Set(candidates.map(\.id))
+    }
+
+    func deselectAll() {
+        selectedCandidateIDs.removeAll()
     }
 
     func freeDiskSpace() -> Int64? {
