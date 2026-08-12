@@ -5,6 +5,7 @@ import Foundation
 final class AppModel: ObservableObject {
     @Published var workspaces: [Workspace] = []
     @Published var dockerState: DockerState = .checking
+    @Published var globalCaches: [GlobalCache] = []
     @Published var selectedCandidateIDs = Set<String>()
     @Published var isScanning = false
     @Published var scannedWorkspaceCount = 0
@@ -16,11 +17,14 @@ final class AppModel: ObservableObject {
     @Published var lastMessage: String?
     @Published var lastSyncedAt: Date?
     @Published var searchRoots: [URL]
+    @Published var updateState: UpdateState = .idle
 
     private let scanner = WorkspaceScanner()
     private let cleaner = CleanupService()
     private let docker = DockerService()
+    private let globalCacheService = GlobalCacheService()
     private let scanCache = ScanCache()
+    private let updateService = UpdateService()
     private let defaultsKey = "searchRoots"
     private let lastSyncedKey = "lastSuccessfulScanDate"
 
@@ -35,12 +39,29 @@ final class AppModel: ObservableObject {
         workspaces = scanCache.load(under: searchRoots)
         selectedCandidateIDs = Set(workspaces.flatMap(\.candidates).map(\.id))
         lastSyncedAt = UserDefaults.standard.object(forKey: lastSyncedKey) as? Date
+        if updateService.repository == nil {
+            updateState = .unavailable
+        } else {
+            Task { [weak self] in
+                await self?.checkForUpdates()
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(21_600))
+                    guard !Task.isCancelled else { break }
+                    await self?.checkForUpdates()
+                }
+            }
+        }
     }
 
     var candidates: [CleanupCandidate] { workspaces.flatMap(\.candidates) }
     var selectedCandidates: [CleanupCandidate] { candidates.filter { selectedCandidateIDs.contains($0.id) } }
     var selectedBytes: Int64 { selectedCandidates.reduce(0) { $0 + $1.allocatedBytes } }
-    var totalReclaimableBytes: Int64 { workspaces.reduce(0) { $0 + $1.reclaimableBytes } + dockerState.reclaimableBytes }
+    var versionLabel: String { "Version \(updateService.currentVersion) (\(updateService.buildNumber))" }
+    var totalReclaimableBytes: Int64 {
+        workspaces.reduce(0) { $0 + $1.reclaimableBytes }
+            + dockerState.reclaimableBytes
+            + globalCaches.reduce(0) { $0 + $1.bytes }
+    }
     var repositoryGroups: [RepositoryGroup] {
         Dictionary(grouping: workspaces, by: \.repositoryID)
             .map { repositoryID, workspaces in
@@ -68,6 +89,7 @@ final class AppModel: ObservableObject {
         let roots = searchRoots
         let scanner = scanner
         let docker = docker
+        let globalCacheService = globalCacheService
 
         Task {
             dockerState = .checking
@@ -75,6 +97,10 @@ final class AppModel: ObservableObject {
             Task {
                 let newDockerState = await Task.detached(priority: .utility) { docker.status() }.value
                 dockerState = newDockerState
+            }
+            Task {
+                let caches = await Task.detached(priority: .utility) { globalCacheService.inspectAll() }.value
+                globalCaches = caches.sorted { $0.bytes > $1.bytes }
             }
 
             let knownRoots = roots.filter(scanner.usesShallowDiscovery)
@@ -179,6 +205,63 @@ final class AppModel: ObservableObject {
             isCleaning = false
             scan()
         }
+    }
+
+    func cleanGlobalCache(_ cache: GlobalCache) {
+        guard !isCleaning else { return }
+        isCleaning = true
+        let service = globalCacheService
+        Task {
+            do {
+                try await Task.detached(priority: .userInitiated) { try service.clean(id: cache.id) }.value
+                lastMessage = "\(cache.name) cleaned. It will be rebuilt or downloaded when needed."
+            } catch {
+                lastMessage = "\(cache.name) cleanup failed: \(error.localizedDescription)"
+            }
+            isCleaning = false
+            scan()
+        }
+    }
+
+    func checkForUpdates() async {
+        guard updateService.repository != nil else {
+            updateState = .unavailable
+            return
+        }
+        if case .downloading = updateState { return }
+        updateState = .checking
+        do {
+            if let release = try await updateService.checkForUpdate() {
+                updateState = .available(release)
+            } else {
+                updateState = .upToDate(Date())
+            }
+        } catch {
+            updateState = .failed(error.localizedDescription)
+        }
+    }
+
+    func installUpdate(_ release: UpdateRelease) {
+        guard case .available = updateState else { return }
+        updateState = .downloading(release)
+        let service = updateService
+        Task {
+            do {
+                let stagedApp = try await service.downloadAndStage(release)
+                try service.launchInstaller(for: stagedApp)
+            } catch {
+                if (error as? UpdateError) == .installLocationNotWritable {
+                    NSWorkspace.shared.open(release.releasePageURL)
+                    updateState = .failed("Opened the release because this installation is not writable")
+                } else {
+                    updateState = .failed(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    func openRelease(_ release: UpdateRelease) {
+        NSWorkspace.shared.open(release.releasePageURL)
     }
 
     func addSearchRoot() {

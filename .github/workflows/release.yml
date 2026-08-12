@@ -1,0 +1,87 @@
+name: Release DevSweep
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: devsweep-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-26
+    env:
+      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Import Developer ID certificate
+        if: ${{ env.APPLE_CERTIFICATE_BASE64 != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != '' }}
+        run: |
+          certificate_path="${RUNNER_TEMP}/developer-id.p12"
+          keychain_path="${RUNNER_TEMP}/devsweep-signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          printf '%s' "${APPLE_CERTIFICATE_BASE64}" | base64 --decode > "${certificate_path}"
+          security create-keychain -p "${keychain_password}" "${keychain_path}"
+          security set-keychain-settings -lut 21600 "${keychain_path}"
+          security unlock-keychain -p "${keychain_password}" "${keychain_path}"
+          security import "${certificate_path}" -P "${APPLE_CERTIFICATE_PASSWORD}" -A -t cert -f pkcs12 -k "${keychain_path}"
+          security list-keychain -d user -s "${keychain_path}"
+          security set-key-partition-list -S apple-tool:,apple: -k "${keychain_password}" "${keychain_path}"
+          echo "DEVSWEEP_CODESIGN_IDENTITY=${APPLE_SIGNING_IDENTITY}" >> "${GITHUB_ENV}"
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build release
+        env:
+          DEVSWEEP_VERSION: 0.1.${{ github.run_number }}
+          DEVSWEEP_BUILD_NUMBER: ${{ github.run_number }}
+          DEVSWEEP_UPDATE_REPOSITORY: ${{ github.repository }}
+          DEVSWEEP_UNIVERSAL: 1
+        run: ./scripts/build-app.sh release
+
+      - name: Notarize signed app
+        if: ${{ env.APPLE_CERTIFICATE_BASE64 != '' && env.APPLE_SIGNING_IDENTITY != '' && env.APPLE_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != '' && env.APPLE_TEAM_ID != '' }}
+        run: |
+          ditto -c -k --keepParent build/DevSweep.app "${RUNNER_TEMP}/DevSweep-notarization.zip"
+          xcrun notarytool submit "${RUNNER_TEMP}/DevSweep-notarization.zip" \
+            --apple-id "${APPLE_ID}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
+            --wait
+          xcrun stapler staple build/DevSweep.app
+          xcrun stapler validate build/DevSweep.app
+
+      - name: Package and checksum
+        env:
+          VERSION: 0.1.${{ github.run_number }}
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent build/DevSweep.app "dist/DevSweep-${VERSION}.zip"
+          shasum -a 256 "dist/DevSweep-${VERSION}.zip" > "dist/DevSweep-${VERSION}.zip.sha256"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: 0.1.${{ github.run_number }}
+        run: |
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            gh release upload "v${VERSION}" dist/* --clobber
+          else
+            gh release create "v${VERSION}" dist/* \
+              --title "DevSweep ${VERSION}" \
+              --generate-notes \
+              --target "${GITHUB_SHA}"
+          fi

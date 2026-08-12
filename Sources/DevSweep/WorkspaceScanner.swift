@@ -230,6 +230,8 @@ struct WorkspaceScanner: Sendable {
     private static let discoveryExcludedNames: Set<String> = [
         ".git", "node_modules", ".next", ".venv", "venv", ".turbo", ".parcel-cache",
         ".pytest_cache", ".mypy_cache", ".ruff_cache", "__pycache__", ".svelte-kit", ".angular", ".vite",
+        ".nx", ".nuxt", ".output", ".astro", ".docusaurus", ".expo", ".tox", ".nox",
+        "target", ".gradle", ".dart_tool", ".build", "coverage", "Pods",
         "Library", ".Trash"
     ]
 

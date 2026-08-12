@@ -17,6 +17,7 @@ enum CleanupSafetyError: LocalizedError, Equatable {
     case workspaceItself
     case symbolicLink
     case missingDirectory
+    case invalidWorkspace
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +26,7 @@ enum CleanupSafetyError: LocalizedError, Equatable {
         case .workspaceItself: return "A workspace can never be deleted."
         case .symbolicLink: return "Symbolic links are not cleaned."
         case .missingDirectory: return "The directory no longer exists."
+        case .invalidWorkspace: return "The workspace is no longer a Git worktree."
         }
     }
 }
@@ -43,6 +45,9 @@ struct CleanupService: Sendable {
 
         guard target != root else { throw CleanupSafetyError.workspaceItself }
         guard target.path.hasPrefix(root.path + "/") else { throw CleanupSafetyError.outsideWorkspace }
+        guard fileManager.fileExists(atPath: root.appendingPathComponent(".git").path) else {
+            throw CleanupSafetyError.invalidWorkspace
+        }
         let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
         let resolvedTarget = target.resolvingSymlinksInPath().standardizedFileURL
         guard resolvedTarget.path.hasPrefix(resolvedRoot.path + "/") else { throw CleanupSafetyError.outsideWorkspace }
@@ -76,6 +81,8 @@ struct CleanupService: Sendable {
             }
 
             do {
+                try validate(candidate: candidate, in: workspace)
+                // Revalidate at the last possible moment to narrow path-swap races.
                 try validate(candidate: candidate, in: workspace)
                 try trashService.trashItem(at: candidate.url)
                 trashed.append(candidate)

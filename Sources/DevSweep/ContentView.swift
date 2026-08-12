@@ -11,13 +11,13 @@ struct ContentView: View {
         ZStack {
             VStack(spacing: 0) {
                 ScrollView {
-                    LazyVStack(spacing: 0) {
+                    VStack(spacing: 0) {
                         summary
                         if isInitialScan {
                             loadingState
                         } else {
-                            syncBanner
                             dockerCard
+                            globalCachesSection
                             worktreesSection
                             settingsSection
                         }
@@ -25,6 +25,7 @@ struct ContentView: View {
                     .padding(.horizontal, 18)
                     .padding(.bottom, 18)
                 }
+                .scrollIndicators(.hidden)
                 footer
             }
 
@@ -35,6 +36,7 @@ struct ContentView: View {
         }
         .frame(width: 460, height: 660)
         .background(.ultraThinMaterial)
+        .tint(DevSweepTheme.accent)
         .task { if model.workspaces.isEmpty { model.scan() } }
         .animation(.easeInOut(duration: 0.14), value: confirmation)
     }
@@ -44,94 +46,72 @@ struct ContentView: View {
             Color.black.opacity(0.38).ignoresSafeArea().contentShape(Rectangle())
             VStack(alignment: .leading, spacing: 15) {
                 HStack(spacing: 10) {
-                    Image(systemName: kind == .docker ? "shippingbox.fill" : "trash.fill")
-                        .font(.title2).foregroundStyle(kind == .docker ? .blue : .red)
-                    Text(kind == .docker ? "Remove unused Docker images?" : "Move selected folders to Trash?")
+                    Image(systemName: kind.symbolName)
+                        .font(.title2).foregroundStyle(kind.isUpdate ? DevSweepTheme.accent : (kind == .docker ? .blue : .red))
+                    Text(kind.title(model: model))
                         .font(.headline)
                 }
-                Text(kind == .docker
-                     ? "Docker image pruning is permanent. All containers and volumes remain untouched."
-                     : "Only the selected generated folders will move to macOS Trash. Project files and workspace roots are excluded.")
+                Text(kind.message)
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 VStack(spacing: 8) {
                     Button {
                         confirmation = nil
-                        if kind == .docker { model.pruneDockerImages() }
-                        else { model.cleanSelected() }
+                        switch kind {
+                        case .docker: model.pruneDockerImages()
+                        case .folders: model.cleanSelected()
+                        case let .global(id):
+                            if let cache = model.globalCaches.first(where: { $0.id == id }) { model.cleanGlobalCache(cache) }
+                        case let .update(release): model.installUpdate(release)
+                        }
                     } label: {
-                        Text(kind == .docker
-                             ? "Prune unused images"
-                             : "Move \(model.selectedCandidates.count) folders · \(ByteFormatting.string(model.selectedBytes)) to Trash")
+                        Text(kind.actionTitle(model: model))
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent).tint(.red).controlSize(.large)
+                    .buttonStyle(.borderedProminent)
+                    .tint(kind.isUpdate ? DevSweepTheme.accent : .red)
+                    .controlSize(.large)
 
                     Button("Cancel") { confirmation = nil }
                         .buttonStyle(.bordered).controlSize(.large).frame(maxWidth: .infinity)
                 }
             }
             .padding(20).frame(width: 330)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 18).stroke(.separator.opacity(0.6), lineWidth: 0.5) }
+            .devSweepGlassSurface(cornerRadius: 18, interactive: false)
             .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
         }
         .onExitCommand { confirmation = nil }
-    }
-
-    private var syncBanner: some View {
-        HStack(spacing: 9) {
-            if model.isScanning {
-                ProgressView().controlSize(.mini).tint(.accentColor)
-            } else {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-            }
-            if model.isScanning {
-                Text("Refreshing results").fontWeight(.medium)
-                if let lastSyncedAt = model.lastSyncedAt {
-                    Text("· Last synced").foregroundStyle(.secondary)
-                    Text(lastSyncedAt, style: .relative).foregroundStyle(.secondary)
-                }
-            } else if let lastSyncedAt = model.lastSyncedAt {
-                Text("Last synced").fontWeight(.medium)
-                Text(lastSyncedAt, style: .relative).foregroundStyle(.secondary)
-                if let duration = model.lastScanDuration {
-                    Text("· \(duration.formatted(.number.precision(.fractionLength(1))))s")
-                        .foregroundStyle(.secondary).monospacedDigit()
-                }
-                if model.reusedCandidateSizeCount > 0 {
-                    Text("· \(model.reusedCandidateSizeCount) cached")
-                        .foregroundStyle(.secondary).monospacedDigit()
-                }
-            } else {
-                Text("Results loaded from cache").fontWeight(.medium)
-            }
-            Spacer()
-        }
-        .font(.caption)
-        .padding(.horizontal, 11).padding(.vertical, 8)
-        .background((model.isScanning ? Color.accentColor : Color.green).opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
-        .padding(.bottom, 12)
-        .help(model.lastSyncedAt.map { "Last successful scan: \($0.formatted(date: .long, time: .standard))" } ?? "Waiting for the first completed scan")
     }
 
     private var summary: some View {
         VStack(alignment: .leading, spacing: 15) {
             HStack(spacing: 12) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(.linearGradient(colors: [.cyan, .mint], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    Image(systemName: "sparkles").font(.title2.weight(.semibold)).foregroundStyle(.white)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(DevSweepTheme.brandGradient)
+                    Image(systemName: "paintbrush.fill").font(.system(size: 17, weight: .semibold)).foregroundStyle(.white)
                 }
-                .frame(width: 44, height: 44)
+                .frame(width: 34, height: 34)
                 Text("DevSweep").font(.title2.weight(.bold))
                 Spacer()
-                Button { model.scan() } label: {
-                    if model.isScanning { ProgressView().controlSize(.small) }
-                    else { Image(systemName: "arrow.clockwise") }
+                VStack(alignment: .trailing, spacing: 3) {
+                    Button { model.scan() } label: {
+                        if model.isScanning { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "arrow.clockwise") }
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .disabled(model.isScanning || model.isCleaning)
+                    .help("Scan again")
+
+                    if let lastSyncedAt = model.lastSyncedAt {
+                        Text("Last synced \(lastSyncedAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        Text("Not synced yet")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
-                .disabled(model.isScanning || model.isCleaning)
-                .help("Scan again")
             }
 
             if isInitialScan {
@@ -153,7 +133,7 @@ struct ContentView: View {
                     GeometryReader { proxy in
                         ZStack(alignment: .leading) {
                             Capsule().fill(.quaternary)
-                            Capsule().fill(.linearGradient(colors: [.cyan, .mint], startPoint: .leading, endPoint: .trailing))
+                            Capsule().fill(DevSweepTheme.brandGradient)
                                 .frame(width: proxy.size.width * storageFreeFraction)
                         }
                     }
@@ -215,12 +195,63 @@ struct ContentView: View {
                     Text("Preserves all containers and volumes").font(.caption2).foregroundStyle(.tertiary)
                 }
                 Spacer()
-                if case let .available(bytes, _) = model.dockerState, bytes > 0 {
+                switch model.dockerState {
+                case .checking:
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(DevSweepTheme.accent)
+                        .accessibilityLabel("Checking Docker")
+                case let .available(bytes, _) where bytes > 0:
                     Button("Clean") { confirmation = .docker }.disabled(model.isCleaning)
+                default:
+                    EmptyView()
                 }
             }
         }
         .padding(.bottom, 20)
+    }
+
+    private var globalCachesSection: some View {
+        Group {
+            if !model.globalCaches.isEmpty {
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack {
+                        Text("GLOBAL CACHES").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        Spacer()
+                        Text("Permanent cleanup").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                    Panel(padding: 0) {
+                        VStack(spacing: 0) {
+                            ForEach(Array(model.globalCaches.enumerated()), id: \.element.id) { index, cache in
+                                if index > 0 { Divider().padding(.leading, 52) }
+                                HStack(spacing: 11) {
+                                    Image(systemName: cache.symbolName).foregroundStyle(.orange).frame(width: 25)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(cache.name).font(.callout.weight(.semibold))
+                                        Text(cache.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                        if case let .available(_, path) = cache.state {
+                                            Text(path).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+                                        }
+                                    }
+                                    Spacer(minLength: 6)
+                                    if cache.bytes > 0 {
+                                        Text(ByteFormatting.string(cache.bytes)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                        Button("Clean") { confirmation = .global(cache.id) }
+                                            .disabled(model.isCleaning)
+                                    } else {
+                                        Text("Empty").font(.caption).foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .padding(.horizontal, 13).padding(.vertical, 10)
+                            }
+                        }
+                    }
+                    Text("Package-manager commands remove caches permanently; they never touch installed tools or project files.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+                .padding(.bottom, 20)
+            }
+        }
     }
 
     private var worktreesSection: some View {
@@ -287,8 +318,10 @@ struct ContentView: View {
 
         return VStack(alignment: .leading, spacing: 8) {
             Button {
-                if isCollapsed { collapsedRepositoryIDs.remove(repository.id) }
-                else { collapsedRepositoryIDs.insert(repository.id) }
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    if isCollapsed { collapsedRepositoryIDs.remove(repository.id) }
+                    else { collapsedRepositoryIDs.insert(repository.id) }
+                }
             } label: {
                 HStack(spacing: 9) {
                     Image(systemName: "folder").font(.title3).foregroundStyle(.secondary)
@@ -309,10 +342,12 @@ struct ContentView: View {
             .buttonStyle(.plain)
 
             if !isCollapsed {
-                ForEach(repository.workspaces) { workspace in workspaceCard(workspace) }
+                VStack(spacing: 8) {
+                    ForEach(repository.workspaces) { workspace in workspaceCard(workspace) }
+                }
+                .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.16), value: isCollapsed)
     }
 
     private func workspaceCard(_ workspace: Workspace) -> some View {
@@ -349,8 +384,12 @@ struct ContentView: View {
 
                 if expanded {
                     VStack(spacing: 0) {
-                        ForEach(workspace.candidates) { candidate in
-                            Divider().padding(.leading, 48)
+                        ForEach(Array(workspace.candidates.enumerated()), id: \.element.id) { index, candidate in
+                            if index == 0 {
+                                Divider()
+                            } else {
+                                Divider().padding(.horizontal, 13)
+                            }
                             HStack(spacing: 10) {
                                 SelectionCheckbox(state: model.selectedCandidateIDs.contains(candidate.id) ? .on : .off) {
                                     if model.selectedCandidateIDs.contains(candidate.id) { model.selectedCandidateIDs.remove(candidate.id) }
@@ -368,11 +407,11 @@ struct ContentView: View {
                             }
                             .padding(.horizontal, 13).padding(.vertical, 9)
                         }
-                    }.transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                    .transition(.opacity)
                 }
             }
         }
-        .animation(.easeInOut(duration: 0.16), value: expanded)
     }
 
     private var settingsSection: some View {
@@ -392,10 +431,58 @@ struct ContentView: View {
             } label: {
                 Label("Scanned folders", systemImage: "folder.badge.gearshape")
             }
-            Label("Generated folders move to Trash. Project roots, Git data, Docker volumes, and application caches are excluded.", systemImage: "lock.shield.fill")
+            Label("Generated worktree folders move to Trash. Global cache commands are separate, permanent, and require confirmation.", systemImage: "lock.shield.fill")
                 .font(.caption2).foregroundStyle(.tertiary)
+            Divider().padding(.vertical, 3)
+            updateRow
         }
         .padding(.top, 18)
+    }
+
+    private var updateRow: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.triangle.2.circlepath.circle")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.versionLabel).font(.caption.weight(.medium))
+                switch model.updateState {
+                case .unavailable:
+                    Text("Updates are enabled in GitHub release builds")
+                case .idle:
+                    Text("Ready to check GitHub for updates")
+                case .checking:
+                    Text("Checking GitHub…")
+                case .upToDate:
+                    Text("DevSweep is up to date")
+                case let .available(release):
+                    Text("Version \(release.version) is available")
+                case let .downloading(release):
+                    Text("Downloading and verifying \(release.version)…")
+                case let .failed(message):
+                    Text(message)
+                }
+            }
+            .font(.caption2).foregroundStyle(.secondary)
+            .lineLimit(2)
+            Spacer(minLength: 6)
+            switch model.updateState {
+            case .idle, .upToDate, .failed:
+                Button("Check") { Task { await model.checkForUpdates() } }
+                    .controlSize(.small)
+            case let .available(release):
+                VStack(alignment: .trailing, spacing: 3) {
+                    Button("Update") { confirmation = .update(release) }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                    Button("Release notes") { model.openRelease(release) }
+                        .buttonStyle(.plain).font(.caption2).foregroundStyle(.secondary)
+                }
+            case .checking, .downloading:
+                ProgressView().controlSize(.small)
+            case .unavailable:
+                EmptyView()
+            }
+        }
+        .padding(.vertical, 3)
     }
 
     private var footer: some View {
@@ -416,8 +503,7 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
-        .background(.regularMaterial)
-        .overlay(alignment: .top) { Divider() }
+        .devSweepGlassFooter()
     }
 
     private var freeSpaceText: String {
@@ -432,8 +518,10 @@ struct ContentView: View {
     }
 
     private func toggleExpansion(_ workspace: Workspace) {
-        if expandedWorkspaceIDs.contains(workspace.id) { expandedWorkspaceIDs.remove(workspace.id) }
-        else { expandedWorkspaceIDs.insert(workspace.id) }
+        withAnimation(.easeInOut(duration: 0.18)) {
+            if expandedWorkspaceIDs.contains(workspace.id) { expandedWorkspaceIDs.remove(workspace.id) }
+            else { expandedWorkspaceIDs.insert(workspace.id) }
+        }
     }
 
     private func relativeParent(_ candidate: CleanupCandidate, workspace: Workspace) -> String {
@@ -443,7 +531,57 @@ struct ContentView: View {
     }
 }
 
-private enum CleanupConfirmation: Equatable { case folders, docker }
+private enum CleanupConfirmation: Equatable {
+    case folders
+    case docker
+    case global(String)
+    case update(UpdateRelease)
+
+    var isUpdate: Bool {
+        if case .update = self { return true }
+        return false
+    }
+
+    var symbolName: String {
+        switch self {
+        case .folders: return "trash.fill"
+        case .docker: return "shippingbox.fill"
+        case .global: return "externaldrive.badge.xmark"
+        case .update: return "arrow.down.app.fill"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .folders:
+            return "Only the selected generated folders will move to macOS Trash. Project files and workspace roots are excluded."
+        case .docker:
+            return "Docker image pruning is permanent and is allowed only for a local Unix-socket Docker Engine. All containers and volumes remain untouched."
+        case .global:
+            return "This package manager performs permanent cache cleanup. Cached artifacts may need to be downloaded or rebuilt later; installed tools and project files remain untouched."
+        case .update:
+            return "DevSweep will download the release from GitHub, verify its checksum, identity, version, and code signature, then replace and relaunch this app."
+        }
+    }
+
+    @MainActor func title(model: AppModel) -> String {
+        switch self {
+        case .folders: return "Move selected folders to Trash?"
+        case .docker: return "Remove unused Docker images?"
+        case let .global(id): return "Clean \(model.globalCaches.first(where: { $0.id == id })?.name ?? "global cache")?"
+        case let .update(release): return "Install DevSweep \(release.version)?"
+        }
+    }
+
+    @MainActor func actionTitle(model: AppModel) -> String {
+        switch self {
+        case .folders: return "Move \(model.selectedCandidates.count) folders · \(ByteFormatting.string(model.selectedBytes)) to Trash"
+        case .docker: return "Prune unused images"
+        case .global: return "Clean cache permanently"
+        case .update: return "Download and install update"
+        }
+    }
+}
 
 private struct LoadingRow: View {
     let width: CGFloat
@@ -468,15 +606,21 @@ private struct SelectionCheckbox: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        ZStack {
             ZStack {
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(state == .off ? Color.clear : Color.accentColor)
+                    .fill(state == .off ? Color.clear : DevSweepTheme.accent)
                     .overlay { RoundedRectangle(cornerRadius: 5).stroke(state == .off ? Color.secondary : Color.clear, lineWidth: 1.2) }
                 if state == .on { Image(systemName: "checkmark").font(.caption2.weight(.bold)).foregroundStyle(.white) }
                 if state == .mixed { Image(systemName: "minus").font(.caption2.weight(.bold)).foregroundStyle(.white) }
             }.frame(width: 18, height: 18)
-        }.buttonStyle(.plain)
+        }
+        .frame(width: 30, height: 30)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: action)
+        .accessibilityElement()
+        .accessibilityLabel(state == .off ? "Select" : "Deselect")
+        .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -491,7 +635,49 @@ private struct Panel<Content: View>: View {
 
     var body: some View {
         content.padding(padding)
-            .background(.quinary.opacity(0.6), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(.separator.opacity(0.45), lineWidth: 0.5) }
+            .devSweepGlassSurface(cornerRadius: 13, interactive: true)
     }
+}
+
+private extension View {
+    @ViewBuilder
+    func devSweepGlassSurface(cornerRadius: CGFloat, interactive: Bool) -> some View {
+        if #available(macOS 26.0, *) {
+            let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            background(Color.primary.opacity(0.045), in: shape)
+                .glassEffect(.regular.interactive(interactive), in: shape)
+                .overlay {
+                    shape.stroke(Color.primary.opacity(0.11), lineWidth: 0.5)
+                }
+        } else {
+            background(
+                .quinary.opacity(0.6),
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(.separator.opacity(0.45), lineWidth: 0.5)
+            }
+        }
+    }
+
+    @ViewBuilder
+    func devSweepGlassFooter() -> some View {
+        if #available(macOS 26.0, *) {
+            glassEffect(.regular, in: Rectangle())
+        } else {
+            background(.regularMaterial)
+                .overlay(alignment: .top) { Divider() }
+        }
+    }
+}
+
+private enum DevSweepTheme {
+    static let accent = Color(red: 0.96, green: 0.29, blue: 0.14)
+    static let warmOrange = Color(red: 1.00, green: 0.49, blue: 0.12)
+    static let brandGradient = LinearGradient(
+        colors: [warmOrange, accent],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
 }

@@ -23,13 +23,19 @@ struct ScanCache: Sendable {
         return records.compactMap { record in
             let workspaceURL = URL(fileURLWithPath: record.path, isDirectory: true).standardizedFileURL
             guard rootPaths.contains(where: { workspaceURL.path == $0 || workspaceURL.path.hasPrefix($0 + "/") }),
-                  fileManager.fileExists(atPath: workspaceURL.path) else { return nil }
+                  fileManager.fileExists(atPath: workspaceURL.path),
+                  fileManager.fileExists(atPath: workspaceURL.appendingPathComponent(".git").path),
+                  (try? workspaceURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else { return nil }
 
             let candidates = record.candidates.compactMap { candidate -> CleanupCandidate? in
                 let url = URL(fileURLWithPath: candidate.path, isDirectory: true).standardizedFileURL
                 guard let kind = CleanupKind.byDirectoryName[url.lastPathComponent],
                       url.path.hasPrefix(workspaceURL.path + "/"),
-                      fileManager.fileExists(atPath: url.path) else { return nil }
+                      fileManager.fileExists(atPath: url.path),
+                      url.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(
+                        workspaceURL.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+                      ),
+                      (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else { return nil }
                 return CleanupCandidate(
                     url: url,
                     kind: kind,
@@ -55,6 +61,8 @@ struct ScanCache: Sendable {
         do {
             try fileManager.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: cacheURL, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cacheURL.deletingLastPathComponent().path)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cacheURL.path)
         } catch {
             return
         }

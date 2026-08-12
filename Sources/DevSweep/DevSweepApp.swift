@@ -5,7 +5,7 @@ struct DevSweepApp: App {
     @StateObject private var model = AppModel()
 
     var body: some Scene {
-        MenuBarExtra("DevSweep", systemImage: "sparkles") {
+        MenuBarExtra("DevSweep", systemImage: "paintbrush.fill") {
             ContentView()
                 .environmentObject(model)
         }

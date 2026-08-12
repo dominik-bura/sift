@@ -18,7 +18,21 @@ struct CleanupKind: Hashable, Sendable {
         .init(directoryName: "__pycache__", label: "Python bytecode", symbolName: "doc.badge.gearshape"),
         .init(directoryName: ".svelte-kit", label: "SvelteKit output", symbolName: "flame"),
         .init(directoryName: ".angular", label: "Angular cache", symbolName: "a.circle"),
-        .init(directoryName: ".vite", label: "Vite cache", symbolName: "bolt.circle")
+        .init(directoryName: ".vite", label: "Vite cache", symbolName: "bolt.circle"),
+        .init(directoryName: ".nx", label: "Nx cache", symbolName: "square.stack.3d.up"),
+        .init(directoryName: ".nuxt", label: "Nuxt output", symbolName: "mountain.2"),
+        .init(directoryName: ".output", label: "Framework output", symbolName: "shippingbox"),
+        .init(directoryName: ".astro", label: "Astro cache", symbolName: "sparkles"),
+        .init(directoryName: ".docusaurus", label: "Docusaurus cache", symbolName: "book.closed"),
+        .init(directoryName: ".expo", label: "Expo cache", symbolName: "app.badge"),
+        .init(directoryName: ".tox", label: "tox environments", symbolName: "testtube.2"),
+        .init(directoryName: ".nox", label: "nox environments", symbolName: "testtube.2"),
+        .init(directoryName: "target", label: "Rust build output", symbolName: "hammer"),
+        .init(directoryName: ".gradle", label: "Gradle project cache", symbolName: "hammer.circle"),
+        .init(directoryName: ".dart_tool", label: "Dart tool cache", symbolName: "wrench.and.screwdriver"),
+        .init(directoryName: ".build", label: "Swift build output", symbolName: "swift"),
+        .init(directoryName: "coverage", label: "Coverage reports", symbolName: "chart.bar"),
+        .init(directoryName: "Pods", label: "CocoaPods dependencies", symbolName: "shippingbox")
     ]
 
     static let byDirectoryName = Dictionary(uniqueKeysWithValues: supported.map { ($0.directoryName, $0) })
@@ -78,6 +92,26 @@ enum DockerState: Equatable, Sendable {
 
     var reclaimableBytes: Int64 {
         if case let .available(bytes, _) = self { return bytes }
+        return 0
+    }
+}
+
+struct GlobalCache: Identifiable, Equatable, Sendable {
+    enum State: Equatable, Sendable {
+        case checking
+        case unavailable
+        case available(bytes: Int64, path: String)
+        case failed(String)
+    }
+
+    let id: String
+    let name: String
+    let detail: String
+    let symbolName: String
+    let state: State
+
+    var bytes: Int64 {
+        if case let .available(bytes, _) = state { return bytes }
         return 0
     }
 }

@@ -1,18 +1,17 @@
 import Foundation
 
-struct CommandResult: Sendable {
-    let output: String
-    let error: String
-    let exitCode: Int32
-}
-
 struct DockerService: Sendable {
+    private let runner = SecureCommandRunner()
+
     func status() -> DockerState {
         guard let executable = findDocker() else {
             return .unavailable("Docker CLI not found")
         }
 
-        let result = run(executable, arguments: ["system", "df", "--format", "{{.Type}}|{{.Reclaimable}}"])
+        guard localEndpoint(using: executable) != nil else {
+            return .unavailable("Remote Docker contexts are not supported")
+        }
+        let result = runner.run(executable, arguments: ["system", "df", "--format", "{{.Type}}|{{.Reclaimable}}"])
         guard result.exitCode == 0 else {
             return .unavailable(Self.userFacingError(result.error))
         }
@@ -21,7 +20,10 @@ struct DockerService: Sendable {
             let fields = line.split(separator: "|", maxSplits: 1).map(String.init)
             guard fields.count == 2, fields[0].localizedCaseInsensitiveContains("image") else { continue }
             let bytes = Self.parseHumanSize(fields[1]) ?? 0
-            return .available(reclaimableBytes: bytes, detail: fields[1])
+            return .available(
+                reclaimableBytes: bytes,
+                detail: bytes == 0 ? "No unused images" : ByteFormatting.string(bytes)
+            )
         }
 
         return .available(reclaimableBytes: 0, detail: "No unused images")
@@ -31,7 +33,10 @@ struct DockerService: Sendable {
         guard let executable = findDocker() else {
             throw DockerError.unavailable("Docker CLI not found")
         }
-        let result = run(executable, arguments: ["image", "prune", "-a", "--force"])
+        guard localEndpoint(using: executable) != nil else {
+            throw DockerError.unavailable("Remote Docker contexts are not supported")
+        }
+        let result = runner.run(executable, arguments: ["image", "prune", "-a", "--force"], timeout: 120)
         guard result.exitCode == 0 else {
             throw DockerError.unavailable(Self.userFacingError(result.error))
         }
@@ -39,38 +44,25 @@ struct DockerService: Sendable {
     }
 
     private func findDocker() -> URL? {
-        var candidates: [String] = []
-        if let path = ProcessInfo.processInfo.environment["PATH"] {
-            candidates += path.split(separator: ":").map { "\($0)/docker" }
-        }
-        candidates += [
-            "/opt/homebrew/bin/docker",
-            "/usr/local/bin/docker",
+        TrustedExecutable.find("docker", additionalPaths: [
             "/Applications/Docker.app/Contents/Resources/bin/docker",
             "/Applications/OrbStack.app/Contents/MacOS/xbin/docker"
-        ]
-        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }).map(URL.init(fileURLWithPath:))
+        ])
     }
 
-    private func run(_ executable: URL, arguments: [String]) -> CommandResult {
-        let process = Process()
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.executableURL = executable
-        process.arguments = arguments
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
+    func localEndpoint(using executable: URL) -> String? {
+        let result = runner.run(
+            executable,
+            arguments: ["context", "inspect", "--format", "{{(index .Endpoints \"docker\").Host}}"]
+        )
+        guard result.exitCode == 0 else { return nil }
+        let endpoint = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Self.isAllowedEndpoint(endpoint) else { return nil }
+        return endpoint
+    }
 
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return CommandResult(output: "", error: error.localizedDescription, exitCode: -1)
-        }
-
-        let output = String(decoding: outputPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let error = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        return CommandResult(output: output, error: error, exitCode: process.terminationStatus)
+    static func isAllowedEndpoint(_ endpoint: String) -> Bool {
+        endpoint.hasPrefix("unix://") && !endpoint.contains("\n") && !endpoint.contains("\r")
     }
 
     static func parseHumanSize(_ input: String) -> Int64? {

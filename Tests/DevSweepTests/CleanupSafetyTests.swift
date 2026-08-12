@@ -38,6 +38,7 @@ final class CleanupSafetyTests: XCTestCase {
         let candidateURL = workspaceURL.appendingPathComponent(".next", isDirectory: true)
         let trashURL = temporaryRoot.appendingPathComponent("TestTrash", isDirectory: true)
         try FileManager.default.createDirectory(at: candidateURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspaceURL.appendingPathComponent(".git"), withIntermediateDirectories: true)
         try "keep".write(to: workspaceURL.appendingPathComponent("source.swift"), atomically: true, encoding: .utf8)
 
         let candidate = CleanupCandidate(url: candidateURL, kind: CleanupKind.byDirectoryName[".next"]!, allocatedBytes: 4)
@@ -82,6 +83,7 @@ final class CleanupSafetyTests: XCTestCase {
         let outsideRoot = temporaryRoot.appendingPathComponent("external", isDirectory: true)
         let outsideCandidate = outsideRoot.appendingPathComponent("node_modules", isDirectory: true)
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspaceURL.appendingPathComponent(".git"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outsideCandidate, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(
             at: workspaceURL.appendingPathComponent("linked"),
@@ -101,6 +103,34 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(DockerService.parseHumanSize("21.07GB (99%)"), 21_070_000_000)
         XCTAssertEqual(DockerService.parseHumanSize("0B"), 0)
         XCTAssertEqual(DockerService.parseHumanSize("512MB (40%)"), 512_000_000)
+    }
+
+    func testDockerSizeFormattingDoesNotRequirePercentage() {
+        XCTAssertEqual(DockerService.parseHumanSize("0B (0%)"), 0)
+        XCTAssertEqual(DockerService.parseHumanSize("15.89GB (67%)"), 15_890_000_000)
+    }
+
+    func testDockerOnlyAllowsLocalUnixSocketEndpoints() {
+        XCTAssertTrue(DockerService.isAllowedEndpoint("unix:///Users/person/.orbstack/run/docker.sock"))
+        XCTAssertFalse(DockerService.isAllowedEndpoint("ssh://builder@example.com"))
+        XCTAssertFalse(DockerService.isAllowedEndpoint("tcp://192.0.2.1:2376"))
+        XCTAssertFalse(DockerService.isAllowedEndpoint("unix:///tmp/docker.sock\nssh://example.com"))
+    }
+
+    func testUpdateVersionComparison() {
+        XCTAssertEqual(UpdateService.compareVersions("0.1.12", "0.1.9"), .orderedDescending)
+        XCTAssertEqual(UpdateService.compareVersions("1.0", "1.0.0"), .orderedSame)
+        XCTAssertEqual(UpdateService.compareVersions("0.9.9", "1.0.0"), .orderedAscending)
+    }
+
+    func testUpdateRepositoryAndURLsAreRestrictedToGitHub() throws {
+        XCTAssertTrue(UpdateService.isValidRepository("owner/dev-sweep"))
+        XCTAssertFalse(UpdateService.isValidRepository("owner/dev-sweep/extra"))
+        XCTAssertFalse(UpdateService.isValidRepository("https://example.com/repo"))
+
+        XCTAssertTrue(UpdateService.isAllowedDownloadURL(try XCTUnwrap(URL(string: "https://github.com/owner/dev-sweep/releases/download/v1/DevSweep-1.zip"))))
+        XCTAssertFalse(UpdateService.isAllowedDownloadURL(try XCTUnwrap(URL(string: "https://example.com/DevSweep-1.zip"))))
+        XCTAssertFalse(UpdateService.isAllowedDownloadURL(try XCTUnwrap(URL(string: "http://github.com/owner/dev-sweep/releases/download/v1/DevSweep-1.zip"))))
     }
 
     func testDockerConnectionErrorsArePresentedWithoutSocketDetails() {
@@ -159,6 +189,7 @@ final class CleanupSafetyTests: XCTestCase {
         let existingURL = workspaceURL.appendingPathComponent("node_modules", isDirectory: true)
         let missingURL = workspaceURL.appendingPathComponent(".next", isDirectory: true)
         try FileManager.default.createDirectory(at: existingURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspaceURL.appendingPathComponent(".git"), withIntermediateDirectories: true)
         let existing = CleanupCandidate(url: existingURL, kind: CleanupKind.byDirectoryName["node_modules"]!, allocatedBytes: 123)
         let missing = CleanupCandidate(url: missingURL, kind: CleanupKind.byDirectoryName[".next"]!, allocatedBytes: 456)
         let workspace = testWorkspace(url: workspaceURL, candidates: [existing, missing])
