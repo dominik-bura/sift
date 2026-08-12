@@ -112,7 +112,7 @@ struct ContentView: View {
                         Text(bytes > 0 ? "\(ByteFormatting.string(bytes)) reclaimable" : detail)
                             .foregroundStyle(.secondary)
                     }
-                    Text("Keeps containers and every volume")
+                    Text("Preserves all containers and volumes")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

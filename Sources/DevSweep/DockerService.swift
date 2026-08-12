@@ -14,8 +14,7 @@ struct DockerService: Sendable {
 
         let result = run(executable, arguments: ["system", "df", "--format", "{{.Type}}|{{.Reclaimable}}"])
         guard result.exitCode == 0 else {
-            let message = result.error.trimmingCharacters(in: .whitespacesAndNewlines)
-            return .unavailable(message.isEmpty ? "Docker is not running" : message)
+            return .unavailable(Self.userFacingError(result.error))
         }
 
         for line in result.output.split(separator: "\n") {
@@ -34,7 +33,7 @@ struct DockerService: Sendable {
         }
         let result = run(executable, arguments: ["image", "prune", "-a", "--force"])
         guard result.exitCode == 0 else {
-            throw DockerError.unavailable(result.error.trimmingCharacters(in: .whitespacesAndNewlines))
+            throw DockerError.unavailable(Self.userFacingError(result.error))
         }
         return result.output
     }
@@ -92,6 +91,29 @@ struct DockerService: Sendable {
         default: multiplier = 1
         }
         return Int64(number * multiplier)
+    }
+
+    static func userFacingError(_ rawError: String) -> String {
+        let message = rawError.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = message.lowercased()
+        let daemonUnavailableSignals = [
+            "failed to connect to the docker api",
+            "cannot connect to the docker daemon",
+            "is the docker daemon running",
+            "connection refused",
+            "no such file or directory",
+            "docker.sock"
+        ]
+
+        if message.isEmpty || daemonUnavailableSignals.contains(where: normalized.contains) {
+            return "Docker Desktop or OrbStack isn’t running"
+        }
+
+        if normalized.contains("permission denied") {
+            return "Docker is running, but DevSweep cannot access it"
+        }
+
+        return "Docker is unavailable right now"
     }
 }
 

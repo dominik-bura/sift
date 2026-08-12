@@ -102,6 +102,23 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(DockerService.parseHumanSize("0B"), 0)
         XCTAssertEqual(DockerService.parseHumanSize("512MB (40%)"), 512_000_000)
     }
+
+    func testDockerConnectionErrorsArePresentedWithoutSocketDetails() {
+        let rawError = "failed to connect to the docker API at unix:///Users/person/.orbstack/run/docker.sock; check if the daemon is running"
+
+        let message = DockerService.userFacingError(rawError)
+
+        XCTAssertEqual(message, "Docker Desktop or OrbStack isn’t running")
+        XCTAssertFalse(message.contains("/Users/"))
+        XCTAssertFalse(message.contains("docker.sock"))
+    }
+
+    func testDockerPermissionErrorsHaveAnActionableMessage() {
+        XCTAssertEqual(
+            DockerService.userFacingError("permission denied while trying to connect"),
+            "Docker is running, but DevSweep cannot access it"
+        )
+    }
 }
 
 private struct TestTrashService: TrashServing {
