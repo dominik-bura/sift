@@ -2,46 +2,80 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var showCleanupConfirmation = false
-    @State private var showDockerConfirmation = false
+    @State private var confirmation: CleanupConfirmation?
     @State private var showRoots = false
     @State private var expandedWorkspaceIDs = Set<String>()
     @State private var collapsedRepositoryIDs = Set<String>()
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    summary
-                    if isInitialScan {
-                        loadingState
-                    } else {
-                        syncBanner
-                        dockerCard
-                        worktreesSection
-                        settingsSection
+        ZStack {
+            VStack(spacing: 0) {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        summary
+                        if isInitialScan {
+                            loadingState
+                        } else {
+                            syncBanner
+                            dockerCard
+                            worktreesSection
+                            settingsSection
+                        }
                     }
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 18)
                 }
-                .padding(.horizontal, 18)
-                .padding(.bottom, 18)
+                footer
             }
-            footer
+
+            if let confirmation {
+                confirmationOverlay(confirmation)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            }
         }
         .frame(width: 460, height: 660)
         .background(.ultraThinMaterial)
         .task { if model.workspaces.isEmpty { model.scan() } }
-        .confirmationDialog("Move selected generated folders to Trash?", isPresented: $showCleanupConfirmation, titleVisibility: .visible) {
-            Button("Move \(model.selectedCandidates.count) folders to Trash · \(ByteFormatting.string(model.selectedBytes))", role: .destructive) {
-                model.cleanSelected()
+        .animation(.easeInOut(duration: 0.14), value: confirmation)
+    }
+
+    private func confirmationOverlay(_ kind: CleanupConfirmation) -> some View {
+        ZStack {
+            Color.black.opacity(0.38).ignoresSafeArea().contentShape(Rectangle())
+            VStack(alignment: .leading, spacing: 15) {
+                HStack(spacing: 10) {
+                    Image(systemName: kind == .docker ? "shippingbox.fill" : "trash.fill")
+                        .font(.title2).foregroundStyle(kind == .docker ? .blue : .red)
+                    Text(kind == .docker ? "Remove unused Docker images?" : "Move selected folders to Trash?")
+                        .font(.headline)
+                }
+                Text(kind == .docker
+                     ? "Docker image pruning is permanent. All containers and volumes remain untouched."
+                     : "Only the selected generated folders will move to macOS Trash. Project files and workspace roots are excluded.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                VStack(spacing: 8) {
+                    Button {
+                        confirmation = nil
+                        if kind == .docker { model.pruneDockerImages() }
+                        else { model.cleanSelected() }
+                    } label: {
+                        Text(kind == .docker
+                             ? "Prune unused images"
+                             : "Move \(model.selectedCandidates.count) folders · \(ByteFormatting.string(model.selectedBytes)) to Trash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent).tint(.red).controlSize(.large)
+
+                    Button("Cancel") { confirmation = nil }
+                        .buttonStyle(.bordered).controlSize(.large).frame(maxWidth: .infinity)
+                }
             }
-        } message: {
-            Text("Only the listed generated folders will move to macOS Trash. Project files and workspace roots are structurally excluded.")
+            .padding(20).frame(width: 330)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 18).stroke(.separator.opacity(0.6), lineWidth: 0.5) }
+            .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
         }
-        .confirmationDialog("Remove all unused Docker images?", isPresented: $showDockerConfirmation, titleVisibility: .visible) {
-            Button("Prune unused images", role: .destructive) { model.pruneDockerImages() }
-        } message: {
-            Text("Docker cannot use macOS Trash, so image pruning is permanent. All containers and volumes remain untouched.")
-        }
+        .onExitCommand { confirmation = nil }
     }
 
     private var syncBanner: some View {
@@ -174,7 +208,7 @@ struct ContentView: View {
                 }
                 Spacer()
                 if case let .available(bytes, _) = model.dockerState, bytes > 0 {
-                    Button("Clean") { showDockerConfirmation = true }.disabled(model.isCleaning)
+                    Button("Clean") { confirmation = .docker }.disabled(model.isCleaning)
                 }
             }
         }
@@ -363,7 +397,7 @@ struct ContentView: View {
                 Label(freeSpaceText, systemImage: "internaldrive").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
-                Button { showCleanupConfirmation = true } label: {
+                Button { confirmation = .folders } label: {
                     if isInitialScan {
                         HStack { ProgressView().controlSize(.small); Text("Scanning…") }.frame(minWidth: 170)
                     } else if model.isCleaning { ProgressView().controlSize(.small).frame(minWidth: 170) }
@@ -400,6 +434,8 @@ struct ContentView: View {
         return parent.replacingOccurrences(of: workspace.url.path + "/", with: "Project/")
     }
 }
+
+private enum CleanupConfirmation: Equatable { case folders, docker }
 
 private struct LoadingRow: View {
     let width: CGFloat
