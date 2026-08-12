@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var showCleanupConfirmation = false
     @State private var showDockerConfirmation = false
     @State private var showRoots = false
+    @State private var expandedWorkspaceIDs = Set<String>()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -184,7 +185,13 @@ struct ContentView: View {
 
     private func workspaceCard(_ workspace: Workspace) -> some View {
         Card {
-            DisclosureGroup {
+            DisclosureGroup(isExpanded: Binding(
+                get: { expandedWorkspaceIDs.contains(workspace.id) },
+                set: { isExpanded in
+                    if isExpanded { expandedWorkspaceIDs.insert(workspace.id) }
+                    else { expandedWorkspaceIDs.remove(workspace.id) }
+                }
+            )) {
                 VStack(spacing: 0) {
                     HStack {
                         Text("\(workspace.candidates.count) generated folder\(workspace.candidates.count == 1 ? "" : "s")")
@@ -234,21 +241,33 @@ struct ContentView: View {
                     )) { EmptyView() }
                     .toggleStyle(.checkbox)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack {
-                            Text(workspace.name).font(.headline).lineLimit(1)
-                            Text(workspace.branch)
-                                .font(.caption)
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(.quaternary, in: Capsule())
-                                .lineLimit(1)
+                    Button {
+                        if expandedWorkspaceIDs.contains(workspace.id) {
+                            expandedWorkspaceIDs.remove(workspace.id)
+                        } else {
+                            expandedWorkspaceIDs.insert(workspace.id)
                         }
-                        Text(workspace.url.path)
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    } label: {
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack {
+                                    Text(workspace.name).font(.headline).lineLimit(1)
+                                    Text(workspace.branch)
+                                        .font(.caption)
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(.quaternary, in: Capsule())
+                                        .lineLimit(1)
+                                }
+                                Text(workspace.url.path)
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                            }
+                            Spacer()
+                            Text(ByteFormatting.string(workspace.reclaimableBytes))
+                                .font(.callout.weight(.semibold).monospacedDigit())
+                        }
+                        .contentShape(Rectangle())
                     }
-                    Spacer()
-                    Text(ByteFormatting.string(workspace.reclaimableBytes))
-                        .font(.callout.weight(.semibold).monospacedDigit())
+                    .buttonStyle(.plain)
                 }
             }
         }
