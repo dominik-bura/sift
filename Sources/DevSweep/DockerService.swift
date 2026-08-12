@@ -106,7 +106,7 @@ struct DockerService: Sendable {
         ]
 
         if message.isEmpty || daemonUnavailableSignals.contains(where: normalized.contains) {
-            return "Docker Desktop or OrbStack isn’t running"
+            return "Docker Engine is not running"
         }
 
         if normalized.contains("permission denied") {

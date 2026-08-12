@@ -108,7 +108,7 @@ final class CleanupSafetyTests: XCTestCase {
 
         let message = DockerService.userFacingError(rawError)
 
-        XCTAssertEqual(message, "Docker Desktop or OrbStack isn’t running")
+        XCTAssertEqual(message, "Docker Engine is not running")
         XCTAssertFalse(message.contains("/Users/"))
         XCTAssertFalse(message.contains("docker.sock"))
     }
