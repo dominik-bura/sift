@@ -9,342 +9,315 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-            content
-            Divider()
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    summary
+                    dockerCard
+                    worktreesSection
+                    settingsSection
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 18)
+            }
             footer
         }
-        .frame(width: 440, height: 620)
-        .task {
-            if model.workspaces.isEmpty { model.scan() }
-        }
-        .confirmationDialog(
-            "Move selected generated folders to Trash?",
-            isPresented: $showCleanupConfirmation,
-            titleVisibility: .visible
-        ) {
+        .frame(width: 460, height: 660)
+        .background(.ultraThinMaterial)
+        .task { if model.workspaces.isEmpty { model.scan() } }
+        .confirmationDialog("Move selected generated folders to Trash?", isPresented: $showCleanupConfirmation, titleVisibility: .visible) {
             Button("Move \(model.selectedCandidates.count) folders to Trash · \(ByteFormatting.string(model.selectedBytes))", role: .destructive) {
                 model.cleanSelected()
             }
         } message: {
-            Text("Only the listed generated folders will be moved to macOS Trash, where they remain recoverable. Project files and workspace roots are structurally excluded.")
+            Text("Only the listed generated folders will move to macOS Trash. Project files and workspace roots are structurally excluded.")
         }
-        .confirmationDialog(
-            "Remove all unused Docker images?",
-            isPresented: $showDockerConfirmation,
-            titleVisibility: .visible
-        ) {
+        .confirmationDialog("Remove all unused Docker images?", isPresented: $showDockerConfirmation, titleVisibility: .visible) {
             Button("Prune unused images", role: .destructive) { model.pruneDockerImages() }
         } message: {
-            Text("Docker does not support macOS Trash, so image pruning is permanent. Running containers, stopped containers, volumes, and application data will not be removed.")
+            Text("Docker cannot use macOS Trash, so image pruning is permanent. All containers and volumes remain untouched.")
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(.linearGradient(colors: [.mint, .cyan], startPoint: .topLeading, endPoint: .bottomTrailing))
-                Image(systemName: "sparkles")
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 42, height: 42)
-
-            VStack(alignment: .leading, spacing: 2) {
+    private var summary: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(.linearGradient(colors: [.cyan, .mint], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    Image(systemName: "sparkles").font(.title2.weight(.semibold)).foregroundStyle(.white)
+                }
+                .frame(width: 44, height: 44)
                 Text("DevSweep").font(.title2.weight(.bold))
-                if model.isScanning {
-                    Text("Scanning developer storage…").foregroundStyle(.secondary)
-                } else {
-                    Text("\(ByteFormatting.string(model.totalReclaimableBytes)) ready to reclaim")
+                Spacer()
+                Button { model.scan() } label: {
+                    if model.isScanning { ProgressView().controlSize(.small) }
+                    else { Image(systemName: "arrow.clockwise") }
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .disabled(model.isScanning || model.isCleaning)
+                .help("Scan again")
+            }
+
+            if model.isScanning && model.workspaces.isEmpty {
+                HStack(spacing: 9) {
+                    ProgressView().controlSize(.small)
+                    Text("Finding worktrees and measuring generated files…")
                         .foregroundStyle(.secondary)
                 }
-            }
-            Spacer()
-            Button { model.scan() } label: {
-                if model.isScanning { ProgressView().controlSize(.small) }
-                else { Image(systemName: "arrow.clockwise") }
-            }
-            .buttonStyle(.borderless)
-            .disabled(model.isScanning || model.isCleaning)
-            .help("Scan again")
-        }
-        .padding(16)
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        if model.isScanning && model.workspaces.isEmpty {
-            VStack(spacing: 12) {
-                ProgressView()
-                Text("Finding worktrees and measuring generated files")
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ScrollView {
-                LazyVStack(spacing: 12) {
-                    dockerCard
-                    worktreesSection
-                    rootsSection
-                    safetyNote
+                .frame(height: 58)
+            } else {
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text(ByteFormatting.string(model.totalReclaimableBytes))
+                            .font(.system(size: 32, weight: .bold, design: .rounded)).monospacedDigit()
+                        Text("reclaimable").font(.headline).foregroundStyle(.secondary)
+                    }
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(.quaternary)
+                            Capsule().fill(.linearGradient(colors: [.cyan, .mint], startPoint: .leading, endPoint: .trailing))
+                                .frame(width: proxy.size.width * storageFreeFraction)
+                        }
+                    }
+                    .frame(height: 7)
+                    HStack {
+                        Text(freeSpaceText).foregroundStyle(.secondary)
+                        Spacer()
+                        if let capacity = model.diskCapacity(), let free = model.freeDiskSpace() {
+                            Text("\(ByteFormatting.string(max(0, capacity - free))) used")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .font(.caption.monospacedDigit())
                 }
-                .padding(14)
             }
         }
+        .padding(.top, 16).padding(.bottom, 18)
     }
 
     private var dockerCard: some View {
-        Card {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "shippingbox.fill")
-                    .font(.title2)
-                    .foregroundStyle(.blue)
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 4) {
+        Panel {
+            HStack(spacing: 13) {
+                Image(systemName: "shippingbox.fill").font(.title2).foregroundStyle(.blue).frame(width: 30)
+                VStack(alignment: .leading, spacing: 3) {
                     Text("Docker images").font(.headline)
                     switch model.dockerState {
-                    case .checking:
-                        Text("Checking Docker…").foregroundStyle(.secondary)
-                    case let .unavailable(message):
-                        Text(message).foregroundStyle(.secondary).lineLimit(2)
+                    case .checking: Text("Checking Docker…").foregroundStyle(.secondary)
+                    case let .unavailable(message): Text(message).foregroundStyle(.secondary)
                     case let .available(bytes, detail):
-                        Text(bytes > 0 ? "\(ByteFormatting.string(bytes)) reclaimable" : detail)
-                            .foregroundStyle(.secondary)
+                        Text(bytes > 0 ? "\(ByteFormatting.string(bytes)) reclaimable" : detail).foregroundStyle(.secondary)
                     }
-                    Text("Preserves all containers and volumes")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text("Preserves all containers and volumes").font(.caption2).foregroundStyle(.tertiary)
                 }
                 Spacer()
                 if case let .available(bytes, _) = model.dockerState, bytes > 0 {
-                    Button("Clean") { showDockerConfirmation = true }
-                        .disabled(model.isCleaning)
+                    Button("Clean") { showDockerConfirmation = true }.disabled(model.isCleaning)
                 }
             }
         }
+        .padding(.bottom, 20)
     }
 
     private var worktreesSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
                 Text("WORKTREES").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("\(model.workspaces.count)").font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
                 Spacer()
-                Button("Deselect all") { model.deselectAll() }
-                    .disabled(model.selectedCandidateIDs.isEmpty)
-                Button("Select all") { model.selectAll() }
-                    .disabled(model.selectedCandidateIDs.count == model.candidates.count)
-                Text("\(model.workspaces.count)").font(.caption).foregroundStyle(.tertiary)
+                Button("Deselect all") { model.deselectAll() }.disabled(model.selectedCandidateIDs.isEmpty)
+                Button("Select all") { model.selectAll() }.disabled(model.selectedCandidateIDs.count == model.candidates.count)
             }
+            .buttonStyle(.plain)
+            .font(.caption.weight(.medium))
 
             if model.workspaces.isEmpty {
-                Card {
-                    VStack(spacing: 8) {
+                Panel {
+                    VStack(spacing: 7) {
                         Image(systemName: "checkmark.circle.fill").font(.title).foregroundStyle(.green)
                         Text("No generated folders found").font(.headline)
-                        Text("Add another project folder below if something is missing.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
+                        Text("Add another project folder below if something is missing.").font(.caption).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity).padding(.vertical, 8)
                 }
             } else {
-                ForEach(model.repositoryGroups) { repository in
-                    repositorySection(repository)
-                }
+                ForEach(model.repositoryGroups) { repository in repositorySection(repository) }
             }
         }
     }
 
     private func repositorySection(_ repository: RepositoryGroup) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Image(systemName: "books.vertical.fill")
-                    .foregroundStyle(.secondary)
-                Text(repository.name)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                if repository.workspaces.count > 1 {
-                    Text("\(repository.workspaces.count) worktrees")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 9) {
+                Image(systemName: "folder").font(.title3).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(repository.name).font(.headline).lineLimit(1)
+                    Text("\(repository.workspaces.count) worktree\(repository.workspaces.count == 1 ? "" : "s")")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Text(ByteFormatting.string(repository.reclaimableBytes))
-                    .font(.caption.weight(.medium).monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .font(.callout.weight(.medium).monospacedDigit()).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 4)
 
-            ForEach(repository.workspaces) { workspace in
-                workspaceCard(workspace)
-            }
+            ForEach(repository.workspaces) { workspace in workspaceCard(workspace) }
         }
     }
 
     private func workspaceCard(_ workspace: Workspace) -> some View {
-        Card {
-            DisclosureGroup(isExpanded: Binding(
-                get: { expandedWorkspaceIDs.contains(workspace.id) },
-                set: { isExpanded in
-                    if isExpanded { expandedWorkspaceIDs.insert(workspace.id) }
-                    else { expandedWorkspaceIDs.remove(workspace.id) }
-                }
-            )) {
-                VStack(spacing: 0) {
-                    HStack {
-                        Text("\(workspace.candidates.count) generated folder\(workspace.candidates.count == 1 ? "" : "s")")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Deselect all") { model.toggleWorkspace(workspace, selected: false) }
-                            .disabled(workspace.candidates.allSatisfy { !model.selectedCandidateIDs.contains($0.id) })
-                        Button("Select all") { model.toggleWorkspace(workspace, selected: true) }
-                            .disabled(workspace.candidates.allSatisfy { model.selectedCandidateIDs.contains($0.id) })
-                    }
-                    .padding(.top, 8)
-                    .padding(.bottom, 4)
+        let selectedCount = model.selectedCount(in: workspace)
+        let state: SelectionState = selectedCount == 0 ? .off : (selectedCount == workspace.candidates.count ? .on : .mixed)
+        let expanded = expandedWorkspaceIDs.contains(workspace.id)
 
-                    ForEach(workspace.candidates) { candidate in
-                        Divider().padding(.leading, 28)
-                        Toggle(isOn: Binding(
-                            get: { model.selectedCandidateIDs.contains(candidate.id) },
-                            set: { isOn in
-                                if isOn { model.selectedCandidateIDs.insert(candidate.id) }
-                                else { model.selectedCandidateIDs.remove(candidate.id) }
+        return Panel(padding: 0) {
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    SelectionCheckbox(state: state) { model.toggleWorkspaceSelection(workspace) }
+                    Button { toggleExpansion(workspace) } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "folder").font(.title3).foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 7) {
+                                    Text(workspace.name).font(.headline).lineLimit(1)
+                                    Text(workspace.branch).font(.caption)
+                                        .padding(.horizontal, 7).padding(.vertical, 2)
+                                        .background(.quaternary, in: Capsule()).lineLimit(1)
+                                }
+                                Text(workspace.url.path).font(.caption).foregroundStyle(.secondary)
+                                    .lineLimit(1).truncationMode(.middle)
                             }
-                        )) {
-                            HStack(spacing: 8) {
-                                Image(systemName: candidate.kind.symbolName)
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 18)
+                            Spacer(minLength: 8)
+                            Text(ByteFormatting.string(workspace.reclaimableBytes))
+                                .font(.callout.weight(.semibold).monospacedDigit())
+                            Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        }.contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                }
+                .padding(13)
+
+                if expanded {
+                    VStack(spacing: 0) {
+                        ForEach(workspace.candidates) { candidate in
+                            Divider().padding(.leading, 48)
+                            HStack(spacing: 10) {
+                                SelectionCheckbox(state: model.selectedCandidateIDs.contains(candidate.id) ? .on : .off) {
+                                    if model.selectedCandidateIDs.contains(candidate.id) { model.selectedCandidateIDs.remove(candidate.id) }
+                                    else { model.selectedCandidateIDs.insert(candidate.id) }
+                                }
+                                Image(systemName: candidate.kind.symbolName).foregroundStyle(.secondary).frame(width: 20)
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(candidate.url.lastPathComponent).font(.callout)
-                                    Text(candidate.url.deletingLastPathComponent().path.replacingOccurrences(of: workspace.url.path, with: "Project"))
-                                        .font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+                                    Text(candidate.url.lastPathComponent).font(.callout.weight(.medium))
+                                    Text(relativeParent(candidate, workspace: workspace)).font(.caption2).foregroundStyle(.tertiary)
+                                        .lineLimit(1).truncationMode(.middle)
                                 }
                                 Spacer()
                                 Text(ByteFormatting.string(candidate.allocatedBytes))
                                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                             }
+                            .padding(.horizontal, 13).padding(.vertical, 9)
                         }
-                        .toggleStyle(.checkbox)
-                        .padding(.vertical, 7)
-                    }
-                }
-            } label: {
-                HStack(spacing: 10) {
-                    Toggle(isOn: Binding(
-                        get: { workspace.candidates.allSatisfy { model.selectedCandidateIDs.contains($0.id) } },
-                        set: { model.toggleWorkspace(workspace, selected: $0) }
-                    )) { EmptyView() }
-                    .toggleStyle(.checkbox)
-
-                    Button {
-                        if expandedWorkspaceIDs.contains(workspace.id) {
-                            expandedWorkspaceIDs.remove(workspace.id)
-                        } else {
-                            expandedWorkspaceIDs.insert(workspace.id)
-                        }
-                    } label: {
-                        HStack(spacing: 10) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack {
-                                    Text(workspace.name).font(.headline).lineLimit(1)
-                                    Text(workspace.branch)
-                                        .font(.caption)
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(.quaternary, in: Capsule())
-                                        .lineLimit(1)
-                                }
-                                Text(workspace.url.path)
-                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                            }
-                            Spacer()
-                            Text(ByteFormatting.string(workspace.reclaimableBytes))
-                                .font(.callout.weight(.semibold).monospacedDigit())
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+                    }.transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
         }
+        .animation(.easeInOut(duration: 0.16), value: expanded)
     }
 
-    private var rootsSection: some View {
-        Card {
+    private var settingsSection: some View {
+        VStack(spacing: 8) {
             DisclosureGroup(isExpanded: $showRoots) {
                 VStack(spacing: 8) {
                     ForEach(model.searchRoots, id: \.path) { root in
                         HStack {
-                            Image(systemName: "folder").foregroundStyle(.secondary)
                             Text(root.path).font(.caption).lineLimit(1).truncationMode(.middle)
                             Spacer()
-                            Button { model.removeSearchRoot(root) } label: {
-                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
+                            Button { model.removeSearchRoot(root) } label: { Image(systemName: "minus.circle") }.buttonStyle(.plain)
                         }
                     }
-                    Button { model.addSearchRoot() } label: {
-                        Label("Add project folder", systemImage: "plus")
-                    }
-                    .buttonStyle(.borderless)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.top, 8)
+                    Button { model.addSearchRoot() } label: { Label("Add project folder", systemImage: "plus") }
+                        .buttonStyle(.plain).frame(maxWidth: .infinity, alignment: .leading)
+                }.padding(.top, 8)
             } label: {
                 Label("Scanned folders", systemImage: "folder.badge.gearshape")
             }
+            Label("Generated folders move to Trash. Project roots, Git data, Docker volumes, and application caches are excluded.", systemImage: "lock.shield.fill")
+                .font(.caption2).foregroundStyle(.tertiary)
         }
-    }
-
-    private var safetyNote: some View {
-        Label("Allow-listed generated folders go to Trash. DevSweep never targets a project root, Git data, Docker volumes, or application caches.", systemImage: "lock.shield.fill")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(8)
+        .padding(.top, 18)
     }
 
     private var footer: some View {
-        VStack(spacing: 8) {
-            if let message = model.lastMessage {
-                Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            }
-            HStack {
-                if let free = model.freeDiskSpace() {
-                    Label("\(ByteFormatting.string(free)) free", systemImage: "internaldrive")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+        VStack(spacing: 6) {
+            if let message = model.lastMessage { Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+            HStack(spacing: 12) {
+                Label(freeSpaceText, systemImage: "internaldrive").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                 Spacer()
-                Button("Quit") { NSApplication.shared.terminate(nil) }
-                    .buttonStyle(.borderless)
-                Button {
-                    showCleanupConfirmation = true
-                } label: {
-                    if model.isCleaning { ProgressView().controlSize(.small) }
-                    else { Text("Clean selected · \(ByteFormatting.string(model.selectedBytes))") }
+                Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
+                Button { showCleanupConfirmation = true } label: {
+                    if model.isCleaning { ProgressView().controlSize(.small).frame(minWidth: 170) }
+                    else { Label("Move to Trash · \(ByteFormatting.string(model.selectedBytes))", systemImage: "trash") }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.borderedProminent).controlSize(.large)
                 .disabled(model.selectedCandidates.isEmpty || model.isCleaning || model.isScanning)
             }
         }
-        .padding(12)
+        .padding(.horizontal, 16).padding(.vertical, 11)
+        .background(.regularMaterial)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private var freeSpaceText: String {
+        model.freeDiskSpace().map { "\(ByteFormatting.string($0)) free" } ?? "Disk unavailable"
+    }
+
+    private var storageFreeFraction: Double {
+        guard let free = model.freeDiskSpace(), let capacity = model.diskCapacity(), capacity > 0 else { return 0 }
+        return min(1, max(0.02, Double(free) / Double(capacity)))
+    }
+
+    private func toggleExpansion(_ workspace: Workspace) {
+        if expandedWorkspaceIDs.contains(workspace.id) { expandedWorkspaceIDs.remove(workspace.id) }
+        else { expandedWorkspaceIDs.insert(workspace.id) }
+    }
+
+    private func relativeParent(_ candidate: CleanupCandidate, workspace: Workspace) -> String {
+        let parent = candidate.url.deletingLastPathComponent().path
+        if parent == workspace.url.path { return "Project" }
+        return parent.replacingOccurrences(of: workspace.url.path + "/", with: "Project/")
     }
 }
 
-private struct Card<Content: View>: View {
-    @ViewBuilder let content: Content
+private enum SelectionState { case off, mixed, on }
+
+private struct SelectionCheckbox: View {
+    let state: SelectionState
+    let action: () -> Void
 
     var body: some View {
-        content
-            .padding(12)
-            .background(.quinary.opacity(0.65), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(.separator.opacity(0.35), lineWidth: 0.5)
-            }
+        Button(action: action) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(state == .off ? Color.clear : Color.accentColor)
+                    .overlay { RoundedRectangle(cornerRadius: 5).stroke(state == .off ? Color.secondary : Color.clear, lineWidth: 1.2) }
+                if state == .on { Image(systemName: "checkmark").font(.caption2.weight(.bold)).foregroundStyle(.white) }
+                if state == .mixed { Image(systemName: "minus").font(.caption2.weight(.bold)).foregroundStyle(.white) }
+            }.frame(width: 18, height: 18)
+        }.buttonStyle(.plain)
+    }
+}
+
+private struct Panel<Content: View>: View {
+    let padding: CGFloat
+    @ViewBuilder let content: Content
+
+    init(padding: CGFloat = 13, @ViewBuilder content: () -> Content) {
+        self.padding = padding
+        self.content = content()
+    }
+
+    var body: some View {
+        content.padding(padding)
+            .background(.quinary.opacity(0.6), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(.separator.opacity(0.45), lineWidth: 0.5) }
     }
 }

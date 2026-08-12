@@ -128,6 +128,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func selectedCount(in workspace: Workspace) -> Int {
+        workspace.candidates.count { selectedCandidateIDs.contains($0.id) }
+    }
+
+    func toggleWorkspaceSelection(_ workspace: Workspace) {
+        toggleWorkspace(workspace, selected: selectedCount(in: workspace) != workspace.candidates.count)
+    }
+
     func selectAll() {
         selectedCandidateIDs = Set(candidates.map(\.id))
     }
@@ -139,6 +147,11 @@ final class AppModel: ObservableObject {
     func freeDiskSpace() -> Int64? {
         let values = try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
         return values?.volumeAvailableCapacityForImportantUsage
+    }
+
+    func diskCapacity() -> Int64? {
+        let values = try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeTotalCapacityKey])
+        return values?.volumeTotalCapacity.map(Int64.init)
     }
 
     private func saveRoots() {
