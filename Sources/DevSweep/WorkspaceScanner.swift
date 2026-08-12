@@ -93,9 +93,17 @@ struct WorkspaceScanner: Sendable {
     }
 
     func scanWorkspace(_ workspaceURL: URL) -> Workspace {
+        scanWorkspace(workspaceURL, previous: nil).workspace
+    }
+
+    func scanWorkspace(_ workspaceURL: URL, previous: Workspace?) -> WorkspaceScanResult {
+        let startedAt = ContinuousClock.now
         let root = workspaceURL.standardizedFileURL
         let git = gitMetadata(at: root)
         var candidates: [CleanupCandidate] = []
+        var reusedSizeCount = 0
+        var measuredSizeCount = 0
+        let previousByPath = Dictionary(uniqueKeysWithValues: (previous?.candidates ?? []).map { ($0.url.path, $0) })
         let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .nameKey]
 
         if let enumerator = fileManager.enumerator(
@@ -120,11 +128,24 @@ struct WorkspaceScanner: Sendable {
                 }
 
                 if let kind = CleanupKind.byDirectoryName[name] {
+                    let modificationDate = try? item.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+                    let previousCandidate = previousByPath[item.standardizedFileURL.path]
+                    let canReuse = previousCandidate?.modificationDate != nil
+                        && previousCandidate?.modificationDate == modificationDate
+                    let size: Int64
+                    if canReuse, let previousCandidate {
+                        size = previousCandidate.allocatedBytes
+                        reusedSizeCount += 1
+                    } else {
+                        size = allocatedSize(of: item)
+                        measuredSizeCount += 1
+                    }
                     candidates.append(
                         CleanupCandidate(
                             url: item.standardizedFileURL,
                             kind: kind,
-                            allocatedBytes: allocatedSize(of: item)
+                            allocatedBytes: size,
+                            modificationDate: modificationDate
                         )
                     )
                     enumerator.skipDescendants()
@@ -132,13 +153,20 @@ struct WorkspaceScanner: Sendable {
             }
         }
 
-        return Workspace(
+        let workspace = Workspace(
             url: root,
             name: root.lastPathComponent,
             branch: git.branch,
             repositoryID: git.commonDirectory.path,
             repositoryName: git.repositoryName,
             candidates: candidates.sorted { $0.allocatedBytes > $1.allocatedBytes }
+        )
+        let duration = startedAt.duration(to: .now)
+        return WorkspaceScanResult(
+            workspace: workspace,
+            reusedSizeCount: reusedSizeCount,
+            measuredSizeCount: measuredSizeCount,
+            duration: Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
         )
     }
 

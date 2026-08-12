@@ -94,6 +94,14 @@ struct ContentView: View {
             } else if let lastSyncedAt = model.lastSyncedAt {
                 Text("Last synced").fontWeight(.medium)
                 Text(lastSyncedAt, style: .relative).foregroundStyle(.secondary)
+                if let duration = model.lastScanDuration {
+                    Text("· \(duration.formatted(.number.precision(.fractionLength(1))))s")
+                        .foregroundStyle(.secondary).monospacedDigit()
+                }
+                if model.reusedCandidateSizeCount > 0 {
+                    Text("· \(model.reusedCandidateSizeCount) cached")
+                        .foregroundStyle(.secondary).monospacedDigit()
+                }
             } else {
                 Text("Results loaded from cache").fontWeight(.medium)
             }

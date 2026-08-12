@@ -171,6 +171,24 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(restored[0].candidates, [existing])
     }
 
+    func testWarmWorkspaceScanReusesUnchangedCandidateSize() throws {
+        let workspaceURL = temporaryRoot.appendingPathComponent("warm-project", isDirectory: true)
+        try createGitWorkspace(at: workspaceURL)
+        let candidateURL = workspaceURL.appendingPathComponent("node_modules/pkg", isDirectory: true)
+        try FileManager.default.createDirectory(at: candidateURL, withIntermediateDirectories: true)
+        try Data(repeating: 7, count: 4096).write(to: candidateURL.appendingPathComponent("data.bin"))
+        let scanner = WorkspaceScanner()
+
+        let cold = scanner.scanWorkspace(workspaceURL, previous: nil)
+        let warm = scanner.scanWorkspace(workspaceURL, previous: cold.workspace)
+
+        XCTAssertEqual(cold.measuredSizeCount, 1)
+        XCTAssertEqual(cold.reusedSizeCount, 0)
+        XCTAssertEqual(warm.measuredSizeCount, 0)
+        XCTAssertEqual(warm.reusedSizeCount, 1)
+        XCTAssertEqual(warm.workspace.reclaimableBytes, cold.workspace.reclaimableBytes)
+    }
+
     private func testWorkspace(url: URL, candidates: [CleanupCandidate]) -> Workspace {
         Workspace(
             url: url,

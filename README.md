@@ -51,3 +51,5 @@ DevSweep is intentionally dependency-free: SwiftUI/AppKit, Foundation, and the l
 DevSweep restores its last validated scan from a small local cache at launch, then refreshes in the background. Known agent workspace roots use shallow discovery and are scanned before broader custom project folders. The built-in locations include Codex, Claude, Cursor, T3, Conductor, Superset, Superconductor, Copilot, and 21st worktrees when those directories exist.
 
 Workspace measurement uses a bounded pool of four concurrent scans. Results appear progressively and the cache is replaced only after the full refresh finishes.
+
+Each cached generated folder also stores its directory modification signature. When that signature is unchanged, DevSweep reuses the previous allocated size instead of walking every file in `node_modules`, `.venv`, or a build cache again. The last-synced banner reports scan duration and the number of reused size measurements.

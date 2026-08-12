@@ -9,6 +9,9 @@ final class AppModel: ObservableObject {
     @Published var isScanning = false
     @Published var scannedWorkspaceCount = 0
     @Published var discoveredWorkspaceCount = 0
+    @Published var reusedCandidateSizeCount = 0
+    @Published var measuredCandidateSizeCount = 0
+    @Published var lastScanDuration: TimeInterval?
     @Published var isCleaning = false
     @Published var lastMessage: String?
     @Published var lastSyncedAt: Date?
@@ -58,7 +61,10 @@ final class AppModel: ObservableObject {
         isScanning = true
         scannedWorkspaceCount = 0
         discoveredWorkspaceCount = 0
+        reusedCandidateSizeCount = 0
+        measuredCandidateSizeCount = 0
         lastMessage = nil
+        let scanStartedAt = ContinuousClock.now
         let roots = searchRoots
         let scanner = scanner
         let docker = docker
@@ -82,12 +88,13 @@ final class AppModel: ObservableObject {
                 scanner.discoverWorkspaces(in: generalRoots)
             }
 
-            var refreshed = await scanBatch(knownWorkspaceURLs, scanner: scanner, existing: [])
+            let previousByPath = Dictionary(uniqueKeysWithValues: workspaces.map { ($0.url.path, $0) })
+            var refreshed = await scanBatch(knownWorkspaceURLs, scanner: scanner, existing: [], previousByPath: previousByPath)
             if !refreshed.isEmpty { scanCache.save(refreshed) }
             let knownPaths = Set(knownWorkspaceURLs.map(\.path))
             let generalWorkspaceURLs = await generalDiscovery.value.filter { !knownPaths.contains($0.path) }
             discoveredWorkspaceCount += generalWorkspaceURLs.count
-            refreshed = await scanBatch(generalWorkspaceURLs, scanner: scanner, existing: refreshed)
+            refreshed = await scanBatch(generalWorkspaceURLs, scanner: scanner, existing: refreshed, previousByPath: previousByPath)
 
             workspaces = refreshed
             selectedCandidateIDs = Set(refreshed.flatMap(\.candidates).map(\.id))
@@ -95,22 +102,32 @@ final class AppModel: ObservableObject {
             let completedAt = Date()
             lastSyncedAt = completedAt
             UserDefaults.standard.set(completedAt, forKey: lastSyncedKey)
+            let elapsed = scanStartedAt.duration(to: .now)
+            lastScanDuration = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
             isScanning = false
         }
     }
 
-    private func scanBatch(_ urls: [URL], scanner: WorkspaceScanner, existing: [Workspace]) async -> [Workspace] {
+    private func scanBatch(
+        _ urls: [URL],
+        scanner: WorkspaceScanner,
+        existing: [Workspace],
+        previousByPath: [String: Workspace]
+    ) async -> [Workspace] {
         var refreshed = existing
-        await withTaskGroup(of: Workspace.self) { group in
+        await withTaskGroup(of: WorkspaceScanResult.self) { group in
             var iterator = urls.makeIterator()
             for _ in 0..<min(4, urls.count) {
                 if let url = iterator.next() {
-                    group.addTask { scanner.scanWorkspace(url) }
+                    group.addTask { scanner.scanWorkspace(url, previous: previousByPath[url.path]) }
                 }
             }
 
-            while let workspace = await group.next() {
+            while let result = await group.next() {
+                let workspace = result.workspace
                 scannedWorkspaceCount += 1
+                reusedCandidateSizeCount += result.reusedSizeCount
+                measuredCandidateSizeCount += result.measuredSizeCount
                 if !workspace.candidates.isEmpty {
                     refreshed.append(workspace)
                     workspaces = refreshed.sorted {
@@ -120,7 +137,7 @@ final class AppModel: ObservableObject {
                     selectedCandidateIDs = Set(workspaces.flatMap(\.candidates).map(\.id))
                 }
                 if let url = iterator.next() {
-                    group.addTask { scanner.scanWorkspace(url) }
+                    group.addTask { scanner.scanWorkspace(url, previous: previousByPath[url.path]) }
                 }
             }
         }

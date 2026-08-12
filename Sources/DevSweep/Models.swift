@@ -29,6 +29,21 @@ struct CleanupCandidate: Identifiable, Hashable, Sendable {
     let url: URL
     let kind: CleanupKind
     let allocatedBytes: Int64
+    let modificationDate: Date?
+
+    init(url: URL, kind: CleanupKind, allocatedBytes: Int64, modificationDate: Date? = nil) {
+        self.url = url
+        self.kind = kind
+        self.allocatedBytes = allocatedBytes
+        self.modificationDate = modificationDate
+    }
+}
+
+struct WorkspaceScanResult: Sendable {
+    let workspace: Workspace
+    let reusedSizeCount: Int
+    let measuredSizeCount: Int
+    let duration: TimeInterval
 }
 
 struct Workspace: Identifiable, Hashable, Sendable {

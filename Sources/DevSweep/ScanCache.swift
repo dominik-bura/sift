@@ -30,7 +30,12 @@ struct ScanCache: Sendable {
                 guard let kind = CleanupKind.byDirectoryName[url.lastPathComponent],
                       url.path.hasPrefix(workspaceURL.path + "/"),
                       fileManager.fileExists(atPath: url.path) else { return nil }
-                return CleanupCandidate(url: url, kind: kind, allocatedBytes: candidate.allocatedBytes)
+                return CleanupCandidate(
+                    url: url,
+                    kind: kind,
+                    allocatedBytes: candidate.allocatedBytes,
+                    modificationDate: candidate.modificationDate
+                )
             }
             guard !candidates.isEmpty else { return nil }
             return Workspace(
@@ -77,9 +82,11 @@ private struct WorkspaceRecord: Codable {
 private struct CandidateRecord: Codable {
     let path: String
     let allocatedBytes: Int64
+    let modificationDate: Date?
 
     init(_ candidate: CleanupCandidate) {
         path = candidate.url.path
         allocatedBytes = candidate.allocatedBytes
+        modificationDate = candidate.modificationDate
     }
 }
