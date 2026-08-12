@@ -12,9 +12,13 @@ struct ContentView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     summary
-                    dockerCard
-                    worktreesSection
-                    settingsSection
+                    if isInitialScan {
+                        loadingState
+                    } else {
+                        dockerCard
+                        worktreesSection
+                        settingsSection
+                    }
                 }
                 .padding(.horizontal, 18)
                 .padding(.bottom, 18)
@@ -58,13 +62,15 @@ struct ContentView: View {
                 .help("Scan again")
             }
 
-            if model.isScanning && model.workspaces.isEmpty {
-                HStack(spacing: 9) {
-                    ProgressView().controlSize(.small)
-                    Text("Finding worktrees and measuring generated files…")
+            if isInitialScan {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Scanning developer storage")
+                        .font(.title3.weight(.semibold))
+                    Text("Finding worktrees and measuring generated folders")
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-                .frame(height: 58)
+                .padding(.top, 3)
             } else {
                 VStack(alignment: .leading, spacing: 9) {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -95,6 +101,33 @@ struct ContentView: View {
         .padding(.top, 16).padding(.bottom, 18)
     }
 
+    private var loadingState: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle().fill(Color.accentColor.opacity(0.12))
+                ProgressView().controlSize(.regular)
+            }
+            .frame(width: 52, height: 52)
+
+            VStack(spacing: 5) {
+                Text("Looking for reclaimable space…").font(.headline)
+                Text("DevSweep is checking Git worktrees, generated dependencies, build output, and Docker images.")
+                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .frame(maxWidth: 310)
+            }
+
+            VStack(spacing: 9) {
+                LoadingRow(width: 0.78)
+                LoadingRow(width: 0.58)
+                LoadingRow(width: 0.69)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 44)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Scanning worktrees and generated folders")
+    }
+
     private var dockerCard: some View {
         Panel {
             HStack(spacing: 13) {
@@ -120,28 +153,61 @@ struct ContentView: View {
 
     private var worktreesSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
-                Text("WORKTREES").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Text("\(model.workspaces.count)").font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
-                Spacer()
-                Button("Deselect all") { model.deselectAll() }.disabled(model.selectedCandidateIDs.isEmpty)
-                Button("Select all") { model.selectAll() }.disabled(model.selectedCandidateIDs.count == model.candidates.count)
+            if model.isScanning {
+                scanProgress
             }
-            .buttonStyle(.plain)
-            .font(.caption.weight(.medium))
+            if !model.workspaces.isEmpty {
+                HStack(spacing: 10) {
+                    Text("WORKTREES").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text("\(model.workspaces.count)").font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
+                    Spacer()
+                    Button("Deselect all") { model.deselectAll() }.disabled(model.selectedCandidateIDs.isEmpty)
+                    Button("Select all") { model.selectAll() }.disabled(model.selectedCandidateIDs.count == model.candidates.count)
+                }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.medium))
+            }
 
             if model.workspaces.isEmpty {
                 Panel {
-                    VStack(spacing: 7) {
-                        Image(systemName: "checkmark.circle.fill").font(.title).foregroundStyle(.green)
-                        Text("No generated folders found").font(.headline)
-                        Text("Add another project folder below if something is missing.").font(.caption).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity).padding(.vertical, 8)
+                    VStack(spacing: 10) {
+                        ZStack {
+                            Circle().fill(Color.green.opacity(0.12))
+                            Image(systemName: "checkmark").font(.title3.weight(.bold)).foregroundStyle(.green)
+                        }.frame(width: 44, height: 44)
+                        VStack(spacing: 4) {
+                            Text("Nothing to clean right now").font(.headline)
+                            Text("No generated dependency or build folders were found in your scanned projects.")
+                                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        }
+                        HStack(spacing: 12) {
+                            Button("Scan again") { model.scan() }
+                            Button("Add project folder") { model.addSearchRoot() }.buttonStyle(.borderedProminent)
+                        }
+                    }.frame(maxWidth: .infinity).padding(.vertical, 12).padding(.horizontal, 18)
                 }
             } else {
                 ForEach(model.repositoryGroups) { repository in repositorySection(repository) }
             }
         }
+    }
+
+    private var scanProgress: some View {
+        HStack(spacing: 9) {
+            ProgressView().controlSize(.small)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Scanning worktrees…").font(.caption.weight(.semibold))
+                if model.discoveredWorkspaceCount > 0 {
+                    Text("\(model.scannedWorkspaceCount) of \(model.discoveredWorkspaceCount) checked")
+                        .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                } else {
+                    Text("Discovering Git repositories").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func repositorySection(_ repository: RepositoryGroup) -> some View {
@@ -254,7 +320,9 @@ struct ContentView: View {
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
                 Button { showCleanupConfirmation = true } label: {
-                    if model.isCleaning { ProgressView().controlSize(.small).frame(minWidth: 170) }
+                    if isInitialScan {
+                        HStack { ProgressView().controlSize(.small); Text("Scanning…") }.frame(minWidth: 170)
+                    } else if model.isCleaning { ProgressView().controlSize(.small).frame(minWidth: 170) }
                     else { Label("Move to Trash · \(ByteFormatting.string(model.selectedBytes))", systemImage: "trash") }
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large)
@@ -270,6 +338,8 @@ struct ContentView: View {
         model.freeDiskSpace().map { "\(ByteFormatting.string($0)) free" } ?? "Disk unavailable"
     }
 
+    private var isInitialScan: Bool { model.isScanning && model.workspaces.isEmpty }
+
     private var storageFreeFraction: Double {
         guard let free = model.freeDiskSpace(), let capacity = model.diskCapacity(), capacity > 0 else { return 0 }
         return min(1, max(0.02, Double(free) / Double(capacity)))
@@ -284,6 +354,22 @@ struct ContentView: View {
         let parent = candidate.url.deletingLastPathComponent().path
         if parent == workspace.url.path { return "Project" }
         return parent.replacingOccurrences(of: workspace.url.path + "/", with: "Project/")
+    }
+}
+
+private struct LoadingRow: View {
+    let width: CGFloat
+
+    var body: some View {
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 5).fill(.quaternary).frame(width: 18, height: 18)
+            RoundedRectangle(cornerRadius: 4).fill(.quaternary).frame(maxWidth: 220 * width, minHeight: 11, maxHeight: 11)
+            Spacer()
+            RoundedRectangle(cornerRadius: 4).fill(.quaternary).frame(width: 48, height: 11)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(.quinary.opacity(0.45), in: RoundedRectangle(cornerRadius: 11))
+        .redacted(reason: .placeholder)
     }
 }
 

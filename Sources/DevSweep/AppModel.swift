@@ -7,6 +7,8 @@ final class AppModel: ObservableObject {
     @Published var dockerState: DockerState = .checking
     @Published var selectedCandidateIDs = Set<String>()
     @Published var isScanning = false
+    @Published var scannedWorkspaceCount = 0
+    @Published var discoveredWorkspaceCount = 0
     @Published var isCleaning = false
     @Published var lastMessage: String?
     @Published var searchRoots: [URL]
@@ -46,18 +48,42 @@ final class AppModel: ObservableObject {
     func scan() {
         guard !isScanning else { return }
         isScanning = true
+        scannedWorkspaceCount = 0
+        discoveredWorkspaceCount = 0
         lastMessage = nil
         let roots = searchRoots
         let scanner = scanner
         let docker = docker
 
         Task {
-            async let workspaceTask = Task.detached(priority: .userInitiated) { scanner.scan(roots: roots) }.value
-            async let dockerTask = Task.detached(priority: .utility) { docker.status() }.value
-            let (newWorkspaces, newDockerState) = await (workspaceTask, dockerTask)
-            workspaces = newWorkspaces
-            dockerState = newDockerState
-            selectedCandidateIDs = Set(newWorkspaces.flatMap(\.candidates).map(\.id))
+            workspaces = []
+            selectedCandidateIDs.removeAll()
+            dockerState = .checking
+
+            Task {
+                let newDockerState = await Task.detached(priority: .utility) { docker.status() }.value
+                dockerState = newDockerState
+            }
+
+            let workspaceURLs = await Task.detached(priority: .userInitiated) {
+                scanner.discoverWorkspaces(in: roots)
+            }.value
+            discoveredWorkspaceCount = workspaceURLs.count
+
+            for workspaceURL in workspaceURLs {
+                let workspace = await Task.detached(priority: .userInitiated) {
+                    scanner.scanWorkspace(workspaceURL)
+                }.value
+                scannedWorkspaceCount += 1
+
+                guard !workspace.candidates.isEmpty else { continue }
+                workspaces.append(workspace)
+                workspaces.sort {
+                    if $0.reclaimableBytes == $1.reclaimableBytes { return $0.name < $1.name }
+                    return $0.reclaimableBytes > $1.reclaimableBytes
+                }
+                selectedCandidateIDs.formUnion(workspace.candidates.map(\.id))
+            }
             isScanning = false
         }
     }
