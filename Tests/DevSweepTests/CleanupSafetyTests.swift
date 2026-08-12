@@ -140,6 +140,37 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(linkedWorkspace.branch, "feature/grouping")
     }
 
+    func testKnownWorktreeRootUsesShallowDiscovery() throws {
+        let knownRoot = temporaryRoot.appendingPathComponent(".codex/worktrees", isDirectory: true)
+        let directWorkspace = knownRoot.appendingPathComponent("abcd/project", isDirectory: true)
+        let tooDeepWorkspace = knownRoot.appendingPathComponent("one/two/three/project", isDirectory: true)
+        try createGitWorkspace(at: directWorkspace)
+        try createGitWorkspace(at: tooDeepWorkspace)
+
+        let discovered = WorkspaceScanner().discoverWorkspaces(in: [knownRoot])
+
+        XCTAssertTrue(discovered.contains(directWorkspace.standardizedFileURL))
+        XCTAssertFalse(discovered.contains(tooDeepWorkspace.standardizedFileURL))
+    }
+
+    func testScanCacheRestoresExistingCandidatesAndDropsMissingOnes() throws {
+        let root = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let workspaceURL = root.appendingPathComponent("project", isDirectory: true)
+        let existingURL = workspaceURL.appendingPathComponent("node_modules", isDirectory: true)
+        let missingURL = workspaceURL.appendingPathComponent(".next", isDirectory: true)
+        try FileManager.default.createDirectory(at: existingURL, withIntermediateDirectories: true)
+        let existing = CleanupCandidate(url: existingURL, kind: CleanupKind.byDirectoryName["node_modules"]!, allocatedBytes: 123)
+        let missing = CleanupCandidate(url: missingURL, kind: CleanupKind.byDirectoryName[".next"]!, allocatedBytes: 456)
+        let workspace = testWorkspace(url: workspaceURL, candidates: [existing, missing])
+        let cache = ScanCache(cacheURL: temporaryRoot.appendingPathComponent("cache/scan.json"))
+
+        cache.save([workspace])
+        let restored = cache.load(under: [root])
+
+        XCTAssertEqual(restored.count, 1)
+        XCTAssertEqual(restored[0].candidates, [existing])
+    }
+
     private func testWorkspace(url: URL, candidates: [CleanupCandidate]) -> Workspace {
         Workspace(
             url: url,
@@ -149,6 +180,11 @@ final class CleanupSafetyTests: XCTestCase {
             repositoryName: url.lastPathComponent,
             candidates: candidates
         )
+    }
+
+    private func createGitWorkspace(at url: URL) throws {
+        try FileManager.default.createDirectory(at: url.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        try "ref: refs/heads/main\n".write(to: url.appendingPathComponent(".git/HEAD"), atomically: true, encoding: .utf8)
     }
 }
 

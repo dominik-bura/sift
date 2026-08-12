@@ -13,6 +13,10 @@ struct WorkspaceScanner: Sendable {
             }
     }
 
+    func usesShallowDiscovery(for root: URL) -> Bool {
+        Self.isKnownWorkspaceRoot(root)
+    }
+
     func discoverWorkspaces(in roots: [URL]) -> [URL] {
         var found = Set<URL>()
 
@@ -25,6 +29,11 @@ struct WorkspaceScanner: Sendable {
 
             if isGitWorkspace(root) {
                 found.insert(root)
+                continue
+            }
+
+            if Self.isKnownWorkspaceRoot(root) {
+                found.formUnion(discoverWorkspaces(inKnownRoot: root, maximumDepth: 2))
                 continue
             }
 
@@ -58,6 +67,29 @@ struct WorkspaceScanner: Sendable {
         }
 
         return found.sorted { $0.path < $1.path }
+    }
+
+    private func discoverWorkspaces(inKnownRoot root: URL, maximumDepth: Int) -> Set<URL> {
+        var found = Set<URL>()
+        var queue: [(URL, Int)] = [(root, 0)]
+
+        while !queue.isEmpty {
+            let (directory, depth) = queue.removeFirst()
+            guard depth < maximumDepth,
+                  let children = try? fileManager.contentsOfDirectory(
+                    at: directory,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                    options: [.skipsHiddenFiles]
+                  ) else { continue }
+
+            for child in children {
+                let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                guard values?.isDirectory == true, values?.isSymbolicLink != true else { continue }
+                if isGitWorkspace(child) { found.insert(child.standardizedFileURL) }
+                else { queue.append((child, depth + 1)) }
+            }
+        }
+        return found
     }
 
     func scanWorkspace(_ workspaceURL: URL) -> Workspace {
@@ -171,5 +203,16 @@ struct WorkspaceScanner: Sendable {
         ".git", "node_modules", ".next", ".venv", "venv", ".turbo", ".parcel-cache",
         ".pytest_cache", ".mypy_cache", ".ruff_cache", "__pycache__", ".svelte-kit", ".angular", ".vite",
         "Library", ".Trash"
+    ]
+
+    private static func isKnownWorkspaceRoot(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        return knownWorkspaceRootSuffixes.contains { path.hasSuffix($0) }
+    }
+
+    private static let knownWorkspaceRootSuffixes = [
+        "/.codex/worktrees", "/claude/worktrees", "/.claude/worktrees", "/.cursor/worktrees",
+        "/.t3/worktrees", "/.superset/worktrees", "/.superconductor/worktrees",
+        "/conductor/workspaces", "/.copilot/workspaces", "/.21st/worktrees"
     ]
 }

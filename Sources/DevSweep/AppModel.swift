@@ -16,14 +16,19 @@ final class AppModel: ObservableObject {
     private let scanner = WorkspaceScanner()
     private let cleaner = CleanupService()
     private let docker = DockerService()
+    private let scanCache = ScanCache()
     private let defaultsKey = "searchRoots"
 
     init() {
+        let defaults = Self.defaultSearchRoots()
         if let stored = UserDefaults.standard.stringArray(forKey: defaultsKey), !stored.isEmpty {
-            searchRoots = stored.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            let combined = stored.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL } + defaults
+            searchRoots = Array(Dictionary(grouping: combined, by: \.path).compactMap(\.value.first))
         } else {
-            searchRoots = Self.defaultSearchRoots()
+            searchRoots = defaults
         }
+        workspaces = scanCache.load(under: searchRoots)
+        selectedCandidateIDs = Set(workspaces.flatMap(\.candidates).map(\.id))
     }
 
     var candidates: [CleanupCandidate] { workspaces.flatMap(\.candidates) }
@@ -56,8 +61,6 @@ final class AppModel: ObservableObject {
         let docker = docker
 
         Task {
-            workspaces = []
-            selectedCandidateIDs.removeAll()
             dockerState = .checking
 
             Task {
@@ -65,27 +68,57 @@ final class AppModel: ObservableObject {
                 dockerState = newDockerState
             }
 
-            let workspaceURLs = await Task.detached(priority: .userInitiated) {
-                scanner.discoverWorkspaces(in: roots)
+            let knownRoots = roots.filter(scanner.usesShallowDiscovery)
+            let generalRoots = roots.filter { !scanner.usesShallowDiscovery(for: $0) }
+            let knownWorkspaceURLs = await Task.detached(priority: .userInitiated) {
+                scanner.discoverWorkspaces(in: knownRoots)
             }.value
-            discoveredWorkspaceCount = workspaceURLs.count
+            discoveredWorkspaceCount = knownWorkspaceURLs.count
 
-            for workspaceURL in workspaceURLs {
-                let workspace = await Task.detached(priority: .userInitiated) {
-                    scanner.scanWorkspace(workspaceURL)
-                }.value
-                scannedWorkspaceCount += 1
-
-                guard !workspace.candidates.isEmpty else { continue }
-                workspaces.append(workspace)
-                workspaces.sort {
-                    if $0.reclaimableBytes == $1.reclaimableBytes { return $0.name < $1.name }
-                    return $0.reclaimableBytes > $1.reclaimableBytes
-                }
-                selectedCandidateIDs.formUnion(workspace.candidates.map(\.id))
+            let generalDiscovery = Task.detached(priority: .utility) {
+                scanner.discoverWorkspaces(in: generalRoots)
             }
+
+            var refreshed = await scanBatch(knownWorkspaceURLs, scanner: scanner, existing: [])
+            if !refreshed.isEmpty { scanCache.save(refreshed) }
+            let knownPaths = Set(knownWorkspaceURLs.map(\.path))
+            let generalWorkspaceURLs = await generalDiscovery.value.filter { !knownPaths.contains($0.path) }
+            discoveredWorkspaceCount += generalWorkspaceURLs.count
+            refreshed = await scanBatch(generalWorkspaceURLs, scanner: scanner, existing: refreshed)
+
+            workspaces = refreshed
+            selectedCandidateIDs = Set(refreshed.flatMap(\.candidates).map(\.id))
+            scanCache.save(refreshed)
             isScanning = false
         }
+    }
+
+    private func scanBatch(_ urls: [URL], scanner: WorkspaceScanner, existing: [Workspace]) async -> [Workspace] {
+        var refreshed = existing
+        await withTaskGroup(of: Workspace.self) { group in
+            var iterator = urls.makeIterator()
+            for _ in 0..<min(4, urls.count) {
+                if let url = iterator.next() {
+                    group.addTask { scanner.scanWorkspace(url) }
+                }
+            }
+
+            while let workspace = await group.next() {
+                scannedWorkspaceCount += 1
+                if !workspace.candidates.isEmpty {
+                    refreshed.append(workspace)
+                    workspaces = refreshed.sorted {
+                        if $0.reclaimableBytes == $1.reclaimableBytes { return $0.name < $1.name }
+                        return $0.reclaimableBytes > $1.reclaimableBytes
+                    }
+                    selectedCandidateIDs = Set(workspaces.flatMap(\.candidates).map(\.id))
+                }
+                if let url = iterator.next() {
+                    group.addTask { scanner.scanWorkspace(url) }
+                }
+            }
+        }
+        return refreshed
     }
 
     func cleanSelected() {
@@ -188,6 +221,14 @@ final class AppModel: ObservableObject {
         let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         let candidates = [
             home.appendingPathComponent(".codex/worktrees", isDirectory: true),
+            home.appendingPathComponent("claude/worktrees", isDirectory: true),
+            home.appendingPathComponent(".claude/worktrees", isDirectory: true),
+            home.appendingPathComponent(".cursor/worktrees", isDirectory: true),
+            home.appendingPathComponent(".t3/worktrees", isDirectory: true),
+            home.appendingPathComponent(".superset/worktrees", isDirectory: true),
+            home.appendingPathComponent(".superconductor/worktrees", isDirectory: true),
+            home.appendingPathComponent(".copilot/workspaces", isDirectory: true),
+            home.appendingPathComponent(".21st/worktrees", isDirectory: true),
             home.appendingPathComponent("conductor/workspaces", isDirectory: true),
             home.appendingPathComponent("Developer", isDirectory: true),
             home.appendingPathComponent("Projects", isDirectory: true),
