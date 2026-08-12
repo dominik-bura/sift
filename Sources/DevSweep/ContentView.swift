@@ -15,6 +15,7 @@ struct ContentView: View {
                     if isInitialScan {
                         loadingState
                     } else {
+                        syncBanner
                         dockerCard
                         worktreesSection
                         settingsSection
@@ -40,6 +41,34 @@ struct ContentView: View {
         } message: {
             Text("Docker cannot use macOS Trash, so image pruning is permanent. All containers and volumes remain untouched.")
         }
+    }
+
+    private var syncBanner: some View {
+        HStack(spacing: 9) {
+            if model.isScanning {
+                ProgressView().controlSize(.mini).tint(.accentColor)
+            } else {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            }
+            if model.isScanning {
+                Text("Refreshing results").fontWeight(.medium)
+                if let lastSyncedAt = model.lastSyncedAt {
+                    Text("· Last synced").foregroundStyle(.secondary)
+                    Text(lastSyncedAt, style: .relative).foregroundStyle(.secondary)
+                }
+            } else if let lastSyncedAt = model.lastSyncedAt {
+                Text("Last synced").fontWeight(.medium)
+                Text(lastSyncedAt, style: .relative).foregroundStyle(.secondary)
+            } else {
+                Text("Results loaded from cache").fontWeight(.medium)
+            }
+            Spacer()
+        }
+        .font(.caption)
+        .padding(.horizontal, 11).padding(.vertical, 8)
+        .background((model.isScanning ? Color.accentColor : Color.green).opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+        .padding(.bottom, 12)
+        .help(model.lastSyncedAt.map { "Last successful scan: \($0.formatted(date: .long, time: .standard))" } ?? "Waiting for the first completed scan")
     }
 
     private var summary: some View {

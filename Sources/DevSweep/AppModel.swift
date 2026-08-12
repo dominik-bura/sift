@@ -11,6 +11,7 @@ final class AppModel: ObservableObject {
     @Published var discoveredWorkspaceCount = 0
     @Published var isCleaning = false
     @Published var lastMessage: String?
+    @Published var lastSyncedAt: Date?
     @Published var searchRoots: [URL]
 
     private let scanner = WorkspaceScanner()
@@ -18,6 +19,7 @@ final class AppModel: ObservableObject {
     private let docker = DockerService()
     private let scanCache = ScanCache()
     private let defaultsKey = "searchRoots"
+    private let lastSyncedKey = "lastSuccessfulScanDate"
 
     init() {
         let defaults = Self.defaultSearchRoots()
@@ -29,6 +31,7 @@ final class AppModel: ObservableObject {
         }
         workspaces = scanCache.load(under: searchRoots)
         selectedCandidateIDs = Set(workspaces.flatMap(\.candidates).map(\.id))
+        lastSyncedAt = UserDefaults.standard.object(forKey: lastSyncedKey) as? Date
     }
 
     var candidates: [CleanupCandidate] { workspaces.flatMap(\.candidates) }
@@ -89,6 +92,9 @@ final class AppModel: ObservableObject {
             workspaces = refreshed
             selectedCandidateIDs = Set(refreshed.flatMap(\.candidates).map(\.id))
             scanCache.save(refreshed)
+            let completedAt = Date()
+            lastSyncedAt = completedAt
+            UserDefaults.standard.set(completedAt, forKey: lastSyncedKey)
             isScanning = false
         }
     }
