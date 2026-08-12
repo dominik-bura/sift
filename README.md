@@ -1,0 +1,45 @@
+# DevSweep
+
+DevSweep is a small native macOS menu-bar app for reclaiming developer storage without deleting projects.
+
+It discovers Git worktrees below configured folders, measures regenerable dependency and build directories, shows the current branch and exact paths, and lets you choose what to remove. It also reports reclaimable Docker image storage and can prune unused images.
+
+## Safety model
+
+DevSweep's cleanup engine only accepts directories with an allow-listed final path component, and only when that directory is a strict descendant of a discovered workspace. It revalidates every target immediately before removal.
+
+It never targets:
+
+- a workspace or project root
+- `.git` data or source files
+- Docker containers or volumes
+- generic application caches, profiles, sessions, or offline data
+- symbolic links
+
+Docker cleanup runs the equivalent of `docker image prune -a --force`. It deliberately does not run `docker system prune` or any volume cleanup.
+
+## Supported generated folders
+
+`node_modules`, `.next`, `.venv`, `venv`, `.turbo`, `.parcel-cache`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `__pycache__`, `.svelte-kit`, `.angular`, and `.vite`.
+
+Generic names such as `.cache`, `dist`, and `build` are intentionally excluded because they are too ambiguous to delete safely.
+
+## Build and run
+
+Requirements: macOS 14 or newer and Xcode 15 or newer.
+
+```bash
+swift test
+./scripts/build-app.sh
+open build/DevSweep.app
+```
+
+The build script creates an ad-hoc signed app at `build/DevSweep.app`. Drag it to `/Applications` for normal use. On first launch, add any project parent folders that are not among the defaults.
+
+## Development
+
+```bash
+swift run DevSweep
+```
+
+DevSweep is intentionally dependency-free: SwiftUI/AppKit, Foundation, and the local Docker CLI are all it uses.

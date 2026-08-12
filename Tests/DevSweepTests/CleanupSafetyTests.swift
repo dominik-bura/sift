@@ -1,0 +1,103 @@
+import Foundation
+import XCTest
+@testable import DevSweep
+
+final class CleanupSafetyTests: XCTestCase {
+    private var temporaryRoot: URL!
+
+    override func setUpWithError() throws {
+        temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DevSweepTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let temporaryRoot, FileManager.default.fileExists(atPath: temporaryRoot.path) {
+            try FileManager.default.removeItem(at: temporaryRoot)
+        }
+    }
+
+    func testScannerFindsGeneratedDirectoriesAndBranch() throws {
+        let workspace = temporaryRoot.appendingPathComponent("example", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        try "ref: refs/heads/feature/sweep\n".write(to: workspace.appendingPathComponent(".git/HEAD"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: workspace.appendingPathComponent("node_modules/pkg"), withIntermediateDirectories: true)
+        try Data(repeating: 1, count: 1024).write(to: workspace.appendingPathComponent("node_modules/pkg/data.bin"))
+        try FileManager.default.createDirectory(at: workspace.appendingPathComponent("src"), withIntermediateDirectories: true)
+
+        let results = WorkspaceScanner().scan(roots: [temporaryRoot])
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].branch, "feature/sweep")
+        XCTAssertEqual(results[0].candidates.map(\.url.lastPathComponent), ["node_modules"])
+        XCTAssertGreaterThan(results[0].reclaimableBytes, 0)
+    }
+
+    func testCleanerRemovesAllowListedDirectoryButPreservesWorkspace() throws {
+        let workspaceURL = temporaryRoot.appendingPathComponent("project", isDirectory: true)
+        let candidateURL = workspaceURL.appendingPathComponent(".next", isDirectory: true)
+        try FileManager.default.createDirectory(at: candidateURL, withIntermediateDirectories: true)
+        try "keep".write(to: workspaceURL.appendingPathComponent("source.swift"), atomically: true, encoding: .utf8)
+
+        let candidate = CleanupCandidate(url: candidateURL, kind: CleanupKind.byDirectoryName[".next"]!, allocatedBytes: 4)
+        let workspace = Workspace(url: workspaceURL, name: "project", branch: "main", candidates: [candidate])
+        let result = CleanupService().remove([candidate], from: [workspace])
+
+        XCTAssertEqual(result.removed, [candidate])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: candidateURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: workspaceURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: workspaceURL.appendingPathComponent("source.swift").path))
+    }
+
+    func testCleanerRejectsWorkspaceRootEvenIfCandidateMetadataIsForged() throws {
+        let workspaceURL = temporaryRoot.appendingPathComponent("node_modules", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let candidate = CleanupCandidate(url: workspaceURL, kind: CleanupKind.byDirectoryName["node_modules"]!, allocatedBytes: 0)
+        let workspace = Workspace(url: workspaceURL, name: "node_modules", branch: "main", candidates: [candidate])
+
+        XCTAssertThrowsError(try CleanupService().validate(candidate: candidate, in: workspace)) { error in
+            XCTAssertEqual(error as? CleanupSafetyError, .workspaceItself)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: workspaceURL.path))
+    }
+
+    func testCleanerRejectsOutsideDirectory() throws {
+        let workspaceURL = temporaryRoot.appendingPathComponent("project", isDirectory: true)
+        let outside = temporaryRoot.appendingPathComponent("node_modules", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let candidate = CleanupCandidate(url: outside, kind: CleanupKind.byDirectoryName["node_modules"]!, allocatedBytes: 0)
+        let workspace = Workspace(url: workspaceURL, name: "project", branch: "main", candidates: [candidate])
+
+        XCTAssertThrowsError(try CleanupService().validate(candidate: candidate, in: workspace)) { error in
+            XCTAssertEqual(error as? CleanupSafetyError, .outsideWorkspace)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
+    }
+
+    func testCleanerRejectsCandidateReachedThroughSymlinkedAncestor() throws {
+        let workspaceURL = temporaryRoot.appendingPathComponent("project", isDirectory: true)
+        let outsideRoot = temporaryRoot.appendingPathComponent("external", isDirectory: true)
+        let outsideCandidate = outsideRoot.appendingPathComponent("node_modules", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outsideCandidate, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: workspaceURL.appendingPathComponent("linked"),
+            withDestinationURL: outsideRoot
+        )
+        let linkedCandidate = workspaceURL.appendingPathComponent("linked/node_modules", isDirectory: true)
+        let candidate = CleanupCandidate(url: linkedCandidate, kind: CleanupKind.byDirectoryName["node_modules"]!, allocatedBytes: 0)
+        let workspace = Workspace(url: workspaceURL, name: "project", branch: "main", candidates: [candidate])
+
+        XCTAssertThrowsError(try CleanupService().validate(candidate: candidate, in: workspace)) { error in
+            XCTAssertEqual(error as? CleanupSafetyError, .outsideWorkspace)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outsideCandidate.path))
+    }
+
+    func testDockerSizeParser() {
+        XCTAssertEqual(DockerService.parseHumanSize("21.07GB (99%)"), 21_070_000_000)
+        XCTAssertEqual(DockerService.parseHumanSize("0B"), 0)
+        XCTAssertEqual(DockerService.parseHumanSize("512MB (40%)"), 512_000_000)
+    }
+}
