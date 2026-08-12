@@ -33,18 +33,20 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertGreaterThan(results[0].reclaimableBytes, 0)
     }
 
-    func testCleanerRemovesAllowListedDirectoryButPreservesWorkspace() throws {
+    func testCleanerTrashesAllowListedDirectoryButPreservesWorkspace() throws {
         let workspaceURL = temporaryRoot.appendingPathComponent("project", isDirectory: true)
         let candidateURL = workspaceURL.appendingPathComponent(".next", isDirectory: true)
+        let trashURL = temporaryRoot.appendingPathComponent("TestTrash", isDirectory: true)
         try FileManager.default.createDirectory(at: candidateURL, withIntermediateDirectories: true)
         try "keep".write(to: workspaceURL.appendingPathComponent("source.swift"), atomically: true, encoding: .utf8)
 
         let candidate = CleanupCandidate(url: candidateURL, kind: CleanupKind.byDirectoryName[".next"]!, allocatedBytes: 4)
         let workspace = Workspace(url: workspaceURL, name: "project", branch: "main", candidates: [candidate])
-        let result = CleanupService().remove([candidate], from: [workspace])
+        let result = CleanupService(trashService: TestTrashService(destination: trashURL)).remove([candidate], from: [workspace])
 
-        XCTAssertEqual(result.removed, [candidate])
+        XCTAssertEqual(result.trashed, [candidate])
         XCTAssertFalse(FileManager.default.fileExists(atPath: candidateURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: trashURL.appendingPathComponent(".next").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: workspaceURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: workspaceURL.appendingPathComponent("source.swift").path))
     }
@@ -99,5 +101,14 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(DockerService.parseHumanSize("21.07GB (99%)"), 21_070_000_000)
         XCTAssertEqual(DockerService.parseHumanSize("0B"), 0)
         XCTAssertEqual(DockerService.parseHumanSize("512MB (40%)"), 512_000_000)
+    }
+}
+
+private struct TestTrashService: TrashServing {
+    let destination: URL
+
+    func trashItem(at url: URL) throws {
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: url, to: destination.appendingPathComponent(url.lastPathComponent))
     }
 }

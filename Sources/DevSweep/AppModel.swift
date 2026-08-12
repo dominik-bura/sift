@@ -61,9 +61,9 @@ final class AppModel: ObservableObject {
             }.value
             isCleaning = false
             if result.failed.isEmpty {
-                lastMessage = "Reclaimed \(ByteFormatting.string(result.reclaimedBytes)) from \(result.removed.count) folder\(result.removed.count == 1 ? "" : "s")."
+                lastMessage = "Moved \(result.trashed.count) folder\(result.trashed.count == 1 ? "" : "s") · \(ByteFormatting.string(result.reclaimedBytes)) to Trash."
             } else {
-                lastMessage = "Cleaned \(result.removed.count) folders; \(result.failed.count) could not be removed."
+                lastMessage = "Moved \(result.trashed.count) folders to Trash; \(result.failed.count) could not be moved."
             }
             scan()
         }

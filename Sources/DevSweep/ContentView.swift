@@ -19,15 +19,15 @@ struct ContentView: View {
             if model.workspaces.isEmpty { model.scan() }
         }
         .confirmationDialog(
-            "Permanently remove selected generated folders?",
+            "Move selected generated folders to Trash?",
             isPresented: $showCleanupConfirmation,
             titleVisibility: .visible
         ) {
-            Button("Delete \(model.selectedCandidates.count) folders · \(ByteFormatting.string(model.selectedBytes))", role: .destructive) {
+            Button("Move \(model.selectedCandidates.count) folders to Trash · \(ByteFormatting.string(model.selectedBytes))", role: .destructive) {
                 model.cleanSelected()
             }
         } message: {
-            Text("Only the listed generated folders will be deleted. Project files and workspace roots are structurally excluded.")
+            Text("Only the listed generated folders will be moved to macOS Trash, where they remain recoverable. Project files and workspace roots are structurally excluded.")
         }
         .confirmationDialog(
             "Remove all unused Docker images?",
@@ -36,7 +36,7 @@ struct ContentView: View {
         ) {
             Button("Prune unused images", role: .destructive) { model.pruneDockerImages() }
         } message: {
-            Text("Running containers, stopped containers, volumes, and application data will not be removed.")
+            Text("Docker does not support macOS Trash, so image pruning is permanent. Running containers, stopped containers, volumes, and application data will not be removed.")
         }
     }
 
@@ -240,7 +240,7 @@ struct ContentView: View {
     }
 
     private var safetyNote: some View {
-        Label("Only allow-listed generated folders can be deleted. DevSweep never targets a project root, Git data, Docker volumes, or application caches.", systemImage: "lock.shield.fill")
+        Label("Allow-listed generated folders go to Trash. DevSweep never targets a project root, Git data, Docker volumes, or application caches.", systemImage: "lock.shield.fill")
             .font(.caption)
             .foregroundStyle(.secondary)
             .padding(8)

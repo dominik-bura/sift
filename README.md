@@ -2,11 +2,13 @@
 
 DevSweep is a small native macOS menu-bar app for reclaiming developer storage without deleting projects.
 
-It discovers Git worktrees below configured folders, measures regenerable dependency and build directories, shows the current branch and exact paths, and lets you choose what to remove. It also reports reclaimable Docker image storage and can prune unused images.
+It discovers Git worktrees below configured folders, measures regenerable dependency and build directories, shows the current branch and exact paths, and lets you choose what to move to macOS Trash. It also reports reclaimable Docker image storage and can prune unused images.
 
 ## Safety model
 
-DevSweep's cleanup engine only accepts directories with an allow-listed final path component, and only when that directory is a strict descendant of a discovered workspace. It revalidates every target immediately before removal.
+DevSweep's cleanup engine only accepts directories with an allow-listed final path component, and only when that directory is a strict descendant of a discovered workspace. It revalidates every target immediately before moving it to Trash.
+
+Generated folders are moved to macOS Trash rather than deleted directly, so they remain recoverable until Trash is emptied.
 
 It never targets:
 
@@ -16,7 +18,7 @@ It never targets:
 - generic application caches, profiles, sessions, or offline data
 - symbolic links
 
-Docker cleanup runs the equivalent of `docker image prune -a --force`. It deliberately does not run `docker system prune` or any volume cleanup.
+Docker cleanup runs the equivalent of `docker image prune -a --force`. Docker images cannot be moved to macOS Trash, so this separate action is permanent and has its own explicit confirmation. DevSweep deliberately does not run `docker system prune` or any volume cleanup.
 
 ## Supported generated folders
 

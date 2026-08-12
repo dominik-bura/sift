@@ -55,11 +55,11 @@ enum DockerState: Equatable, Sendable {
 }
 
 struct CleanupResult: Sendable {
-    let removed: [CleanupCandidate]
+    let trashed: [CleanupCandidate]
     let failed: [(CleanupCandidate, String)]
 
     var reclaimedBytes: Int64 {
-        removed.reduce(0) { $0 + $1.allocatedBytes }
+        trashed.reduce(0) { $0 + $1.allocatedBytes }
     }
 }
 

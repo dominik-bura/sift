@@ -1,5 +1,16 @@
 import Foundation
 
+protocol TrashServing: Sendable {
+    func trashItem(at url: URL) throws
+}
+
+struct SystemTrashService: TrashServing {
+    func trashItem(at url: URL) throws {
+        var resultingURL: NSURL?
+        try FileManager.default.trashItem(at: url, resultingItemURL: &resultingURL)
+    }
+}
+
 enum CleanupSafetyError: LocalizedError, Equatable {
     case unsupportedDirectory(String)
     case outsideWorkspace
@@ -20,6 +31,11 @@ enum CleanupSafetyError: LocalizedError, Equatable {
 
 struct CleanupService: Sendable {
     private var fileManager: FileManager { FileManager.default }
+    private let trashService: any TrashServing
+
+    init(trashService: any TrashServing = SystemTrashService()) {
+        self.trashService = trashService
+    }
 
     func validate(candidate: CleanupCandidate, in workspace: Workspace) throws {
         let target = candidate.url.standardizedFileURL
@@ -50,7 +66,7 @@ struct CleanupService: Sendable {
             }
         )
 
-        var removed: [CleanupCandidate] = []
+        var trashed: [CleanupCandidate] = []
         var failed: [(CleanupCandidate, String)] = []
 
         for candidate in candidates {
@@ -61,13 +77,13 @@ struct CleanupService: Sendable {
 
             do {
                 try validate(candidate: candidate, in: workspace)
-                try fileManager.removeItem(at: candidate.url)
-                removed.append(candidate)
+                try trashService.trashItem(at: candidate.url)
+                trashed.append(candidate)
             } catch {
                 failed.append((candidate, error.localizedDescription))
             }
         }
 
-        return CleanupResult(removed: removed, failed: failed)
+        return CleanupResult(trashed: trashed, failed: failed)
     }
 }
