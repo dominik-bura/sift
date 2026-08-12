@@ -1,4 +1,4 @@
-name: Release DevSweep
+name: Release Sift
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: devsweep-release
+  group: sift-release
   cancel-in-progress: false
 
 jobs:
@@ -30,7 +30,7 @@ jobs:
         if: ${{ env.APPLE_CERTIFICATE_BASE64 != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != '' }}
         run: |
           certificate_path="${RUNNER_TEMP}/developer-id.p12"
-          keychain_path="${RUNNER_TEMP}/devsweep-signing.keychain-db"
+          keychain_path="${RUNNER_TEMP}/sift-signing.keychain-db"
           keychain_password="$(uuidgen)"
           printf '%s' "${APPLE_CERTIFICATE_BASE64}" | base64 --decode > "${certificate_path}"
           security create-keychain -p "${keychain_password}" "${keychain_path}"
@@ -39,38 +39,61 @@ jobs:
           security import "${certificate_path}" -P "${APPLE_CERTIFICATE_PASSWORD}" -A -t cert -f pkcs12 -k "${keychain_path}"
           security list-keychain -d user -s "${keychain_path}"
           security set-key-partition-list -S apple-tool:,apple: -k "${keychain_password}" "${keychain_path}"
-          echo "DEVSWEEP_CODESIGN_IDENTITY=${APPLE_SIGNING_IDENTITY}" >> "${GITHUB_ENV}"
+          echo "SIFT_CODESIGN_IDENTITY=${APPLE_SIGNING_IDENTITY}" >> "${GITHUB_ENV}"
 
       - name: Run tests
         run: swift test
 
       - name: Build release
         env:
-          DEVSWEEP_VERSION: 0.1.${{ github.run_number }}
-          DEVSWEEP_BUILD_NUMBER: ${{ github.run_number }}
-          DEVSWEEP_UPDATE_REPOSITORY: ${{ github.repository }}
-          DEVSWEEP_UNIVERSAL: 1
+          SIFT_VERSION: 0.1.${{ github.run_number }}
+          SIFT_BUILD_NUMBER: ${{ github.run_number }}
+          SIFT_UPDATE_REPOSITORY: ${{ github.repository }}
+          SIFT_UNIVERSAL: 1
         run: ./scripts/build-app.sh release
 
       - name: Notarize signed app
         if: ${{ env.APPLE_CERTIFICATE_BASE64 != '' && env.APPLE_SIGNING_IDENTITY != '' && env.APPLE_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != '' && env.APPLE_TEAM_ID != '' }}
         run: |
-          ditto -c -k --keepParent build/DevSweep.app "${RUNNER_TEMP}/DevSweep-notarization.zip"
-          xcrun notarytool submit "${RUNNER_TEMP}/DevSweep-notarization.zip" \
+          ditto -c -k --keepParent build/Sift.app "${RUNNER_TEMP}/Sift-notarization.zip"
+          xcrun notarytool submit "${RUNNER_TEMP}/Sift-notarization.zip" \
             --apple-id "${APPLE_ID}" \
             --team-id "${APPLE_TEAM_ID}" \
             --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
             --wait
-          xcrun stapler staple build/DevSweep.app
-          xcrun stapler validate build/DevSweep.app
+          xcrun stapler staple build/Sift.app
+          xcrun stapler validate build/Sift.app
 
-      - name: Package and checksum
+      - name: Package release assets
         env:
           VERSION: 0.1.${{ github.run_number }}
         run: |
           mkdir -p dist
-          ditto -c -k --keepParent build/DevSweep.app "dist/DevSweep-${VERSION}.zip"
-          shasum -a 256 "dist/DevSweep-${VERSION}.zip" > "dist/DevSweep-${VERSION}.zip.sha256"
+          ditto -c -k --keepParent build/Sift.app "dist/Sift-${VERSION}.zip"
+          ./scripts/create-dmg.sh build/Sift.app "dist/Sift-${VERSION}.dmg"
+          if [[ -n "${SIFT_CODESIGN_IDENTITY:-}" ]]; then
+            codesign --force --sign "${SIFT_CODESIGN_IDENTITY}" "dist/Sift-${VERSION}.dmg"
+          fi
+
+      - name: Notarize disk image
+        if: ${{ env.APPLE_CERTIFICATE_BASE64 != '' && env.APPLE_SIGNING_IDENTITY != '' && env.APPLE_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != '' && env.APPLE_TEAM_ID != '' }}
+        env:
+          VERSION: 0.1.${{ github.run_number }}
+        run: |
+          xcrun notarytool submit "dist/Sift-${VERSION}.dmg" \
+            --apple-id "${APPLE_ID}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
+            --wait
+          xcrun stapler staple "dist/Sift-${VERSION}.dmg"
+          xcrun stapler validate "dist/Sift-${VERSION}.dmg"
+
+      - name: Create checksums
+        env:
+          VERSION: 0.1.${{ github.run_number }}
+        run: |
+          shasum -a 256 "dist/Sift-${VERSION}.zip" > "dist/Sift-${VERSION}.zip.sha256"
+          shasum -a 256 "dist/Sift-${VERSION}.dmg" > "dist/Sift-${VERSION}.dmg.sha256"
 
       - name: Create GitHub release
         env:
@@ -81,7 +104,7 @@ jobs:
             gh release upload "v${VERSION}" dist/* --clobber
           else
             gh release create "v${VERSION}" dist/* \
-              --title "DevSweep ${VERSION}" \
+              --title "Sift ${VERSION}" \
               --generate-notes \
               --target "${GITHUB_SHA}"
           fi

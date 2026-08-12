@@ -1,67 +1,85 @@
-# DevSweep
+# Sift
 
-DevSweep is a small native macOS menu-bar app for reclaiming developer storage without deleting projects.
+**A native macOS menu-bar app for safely reclaiming developer storage.**
 
-It discovers Git worktrees below configured folders, groups linked worktrees by their shared repository, measures regenerable dependency and build directories, shows the current branch and exact paths, and lets you select globally, per worktree, or per folder before moving anything to macOS Trash. It also reports reclaimable Docker image storage and global developer caches.
+Sift finds regenerable files across Git worktrees—such as `node_modules`, `.next`, and `.venv`—and lets you move them to macOS Trash without deleting your projects. It also shows reclaimable Docker images and common global developer caches in one place.
 
-## Safety model
+## Highlights
 
-DevSweep's cleanup engine only accepts directories with an allow-listed final path component, and only when that directory is a strict descendant of a discovered workspace. It revalidates every target immediately before moving it to Trash.
+- Groups linked worktrees by repository and shows their branch, path, and reclaimable size
+- Displays scan results progressively, with selection at the global, worktree, and folder level
+- Moves generated project folders to macOS Trash so they remain recoverable
+- Cleans unused Docker images without touching containers or volumes
+- Supports global uv, pnpm, Bun, Yarn, npm, and Go caches
+- Runs entirely on your Mac with no analytics or telemetry
+- Includes built-in update checks from the app's Settings panel
 
-Generated folders are moved to macOS Trash rather than deleted directly, so they remain recoverable until Trash is emptied.
+## Install
 
-It never targets:
+1. Download the latest `Sift-*.dmg` from [GitHub Releases](https://github.com/dominik-bura/sift/releases/latest).
+2. Open the disk image and drag **Sift** onto the **Applications** shortcut.
+3. Eject the disk image, then open Sift from Applications. Its funnel icon will appear in the menu bar.
 
-- a workspace or project root
-- `.git` data or source files
-- Docker containers or volumes
-- generic application caches, profiles, sessions, or offline data
-- symbolic links
+If macOS blocks the first launch, Control-click the app in Finder, choose **Open**, and confirm once.
 
-Docker cleanup runs the equivalent of `docker image prune -a --force`. Docker images cannot be moved to macOS Trash, so this separate action is permanent and has its own explicit confirmation. DevSweep deliberately does not run `docker system prune` or any volume cleanup. Remote Docker contexts are rejected; only a local `unix://` Docker endpoint is allowed.
+Sift requires macOS 14 Sonoma or newer.
 
-Global cache cleanup uses the installed package manager's official command and is therefore permanent. Each action has a separate confirmation. DevSweep supports uv, pnpm, Bun, Yarn, npm, and Go build caches. Cache locations must resolve inside the current user's home directory. Installed tools, managed Python versions, lockfiles, and project files are never targeted.
+## Using Sift
 
-## Supported generated folders
+1. Click the Sift icon in the menu bar.
+2. Review the repositories, worktrees, and generated folders it found.
+3. Select only the items you want to remove.
+4. Click **Move to Trash** and confirm the cleanup.
+
+Use the gear in the bottom-left corner to add or remove scanned project folders, see the installed version, or check for updates.
+
+## What Sift cleans
+
+| Area | Cleanup behavior |
+| --- | --- |
+| Worktrees | Selected generated folders are moved to macOS Trash. Project roots and source files are never selected. |
+| Docker | Unused images are permanently pruned after a separate confirmation. Containers and volumes are preserved. |
+| Global caches | The installed tool's official cache-cleaning command is run after a separate confirmation. |
+
+Supported generated folders include:
 
 `node_modules`, `.next`, `.venv`, `venv`, `.turbo`, `.parcel-cache`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `__pycache__`, `.svelte-kit`, `.angular`, `.vite`, `.nx`, `.nuxt`, `.output`, `.astro`, `.docusaurus`, `.expo`, `.tox`, `.nox`, `target`, `.gradle`, `.dart_tool`, `.build`, `coverage`, and `Pods`.
 
-Generic names such as `.cache`, `dist`, and `build` are intentionally excluded because they are too ambiguous to delete safely.
+Ambiguous names such as `.cache`, `dist`, and `build` are intentionally excluded.
 
-## Build and run
+## Safety and privacy
 
-Requirements: macOS 14 or newer and Xcode 15 or newer.
+Sift is designed around a narrow cleanup boundary:
+
+- It never deletes a workspace or project root, `.git` data, source files, installed tools, managed Python versions, or lockfiles.
+- Every worktree target must have an allow-listed folder name, be a strict descendant of a discovered workspace, and pass validation again immediately before cleanup.
+- Symbolic links and paths outside the selected workspace are rejected.
+- Worktree folders go to macOS Trash instead of being deleted directly.
+- Docker cleanup accepts only a local Unix socket and rejects remote Docker contexts.
+- Docker and global cache actions are clearly marked as permanent and require their own confirmation.
+
+Sift has no third-party runtime dependencies, analytics, or telemetry. It does not upload file paths, scan results, storage information, or identifiers. Release builds contact GitHub only to check for a newer version; an update is downloaded only after you choose to install it.
+
+## Build from source
+
+Requirements: macOS 14 or newer and Xcode 16 or newer.
 
 ```bash
+git clone https://github.com/dominik-bura/sift.git
+cd sift
 swift test
 ./scripts/build-app.sh
-open build/DevSweep.app
+open build/Sift.app
 ```
 
-The build script creates an ad-hoc signed app at `build/DevSweep.app`. Drag it to `/Applications` for normal use. On first launch, add any project parent folders that are not among the defaults.
-
-## Development
+For development, you can run the app directly with:
 
 ```bash
-swift run DevSweep
+swift run Sift
 ```
 
-DevSweep is intentionally dependency-free: SwiftUI/AppKit and Apple system frameworks are its only linked frameworks. Optional cleanup integrations invoke locally installed, trusted-path developer CLIs. It contains no analytics or telemetry. Its only application network access is the narrowly scoped GitHub release check and user-approved update download described below.
+Sift is built with SwiftUI, AppKit, and Apple system frameworks. Optional cleanup integrations invoke supported developer tools already installed on your Mac.
 
-## Releases and updates
+## Contributing
 
-Every push to `main` runs `.github/workflows/release.yml`, builds a universal Apple Silicon + Intel app, embeds a version and the current GitHub repository, and publishes `DevSweep-<version>.zip` plus its SHA-256 checksum in a GitHub Release. Versions use `0.1.<GitHub run number>` so every release is ordered and unique.
-
-GitHub release builds check the repository's public latest-release endpoint at launch and every six hours. The request sends only the normal IP/TLS metadata and a `DevSweep/<version>` user agent; DevSweep sends no telemetry, paths, storage information, identifiers, or credentials. Downloads happen only after clicking **Update**. The repository must be public because DevSweep intentionally does not store or transmit a GitHub access token.
-
-Before installing, DevSweep requires HTTPS on GitHub-owned release hosts, verifies the published SHA-256 checksum, bundle identifier, embedded version, complete code signature, and—when present—the same Developer ID team. A bundled native helper then replaces and relaunches DevSweep only when its containing directory is writable. Local builds without a GitHub `origin` have update checks disabled.
-
-The workflow creates an ad-hoc signed build with no setup. For warning-free public distribution, configure these repository secrets and the same workflow will Developer ID sign, notarize, and staple the app before publishing it: `APPLE_CERTIFICATE_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID`.
-
-## Scan performance
-
-DevSweep restores its last validated scan from a small local cache at launch, then refreshes in the background. Known agent workspace roots use shallow discovery and are scanned before broader custom project folders. The built-in locations include Codex, Claude, Cursor, T3, Conductor, Superset, Superconductor, Copilot, and 21st worktrees when those directories exist.
-
-Workspace measurement uses a bounded pool of four concurrent scans. Results appear progressively and the cache is replaced only after the full refresh finishes.
-
-Each cached generated folder also stores its directory modification signature. When that signature is unchanged, DevSweep reuses the previous allocated size instead of walking every file in `node_modules`, `.venv`, or a build cache again. The last-synced banner reports scan duration and the number of reused size measurements.
+Bug reports, feature ideas, and pull requests are welcome through [GitHub Issues](https://github.com/dominik-bura/sift/issues).

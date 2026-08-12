@@ -3,20 +3,25 @@ import Foundation
 struct ScanCache: Sendable {
     private var fileManager: FileManager { .default }
     private let cacheURL: URL
+    private let legacyCacheURL: URL?
 
     init(cacheURL: URL? = nil) {
         let fileManager = FileManager.default
         if let cacheURL {
             self.cacheURL = cacheURL
+            legacyCacheURL = nil
         } else {
             let base = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
                 ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            self.cacheURL = base.appendingPathComponent("DevSweep/scan-cache.json")
+            self.cacheURL = base.appendingPathComponent("Sift/scan-cache.json")
+            legacyCacheURL = base.appendingPathComponent("DevSweep/scan-cache.json")
         }
     }
 
     func load(under roots: [URL]) -> [Workspace] {
-        guard let data = try? Data(contentsOf: cacheURL),
+        let sourceURL = fileManager.fileExists(atPath: cacheURL.path) ? cacheURL : legacyCacheURL
+        guard let sourceURL,
+              let data = try? Data(contentsOf: sourceURL),
               let records = try? JSONDecoder().decode([WorkspaceRecord].self, from: data) else { return [] }
         let rootPaths = roots.map { $0.standardizedFileURL.path }
 

@@ -1,11 +1,11 @@
 import SwiftUI
 
 @main
-struct DevSweepApp: App {
+struct SiftApp: App {
     @StateObject private var model = AppModel()
 
     var body: some Scene {
-        MenuBarExtra("DevSweep", systemImage: "paintbrush.fill") {
+        MenuBarExtra("Sift", image: "SiftMenuBarIconTemplate") {
             ContentView()
                 .environmentObject(model)
         }

@@ -13,11 +13,11 @@ func waitForExit(pid: pid_t, timeout: TimeInterval = 30) throws {
 
 func validatedBundle(_ rawPath: String) throws -> URL {
     let url = URL(fileURLWithPath: rawPath, isDirectory: true).standardizedFileURL
-    guard url.lastPathComponent == "DevSweep.app",
+    guard url.lastPathComponent == "Sift.app",
           !url.path.contains("\n"), !url.path.contains("\r"),
           (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
           let bundle = Bundle(url: url),
-          bundle.bundleIdentifier == "com.dominikhait.devsweep" else {
+          bundle.bundleIdentifier == "com.dominikhait.sift" else {
         throw UpdaterFailure.invalidBundle
     }
     return url
@@ -35,7 +35,7 @@ do {
     guard fileManager.isWritableFile(atPath: parent.path) else { throw UpdaterFailure.invalidBundle }
 
     try waitForExit(pid: parentPID)
-    let backup = parent.appendingPathComponent(".DevSweep-previous-\(UUID().uuidString).app", isDirectory: true)
+    let backup = parent.appendingPathComponent(".Sift-previous-\(UUID().uuidString).app", isDirectory: true)
     try fileManager.moveItem(at: current, to: backup)
     do {
         try fileManager.moveItem(at: staged, to: current)
@@ -57,6 +57,6 @@ do {
         throw error
     }
 } catch {
-    FileHandle.standardError.write(Data("DevSweep update failed: \(error)\n".utf8))
+    FileHandle.standardError.write(Data("Sift update failed: \(error)\n".utf8))
     exit(1)
 }

@@ -29,6 +29,7 @@ final class AppModel: ObservableObject {
     private let lastSyncedKey = "lastSuccessfulScanDate"
 
     init() {
+        Self.migrateLegacyDefaultsIfNeeded()
         let defaults = Self.defaultSearchRoots()
         if let stored = UserDefaults.standard.stringArray(forKey: defaultsKey), !stored.isEmpty {
             let combined = stored.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL } + defaults
@@ -321,6 +322,22 @@ final class AppModel: ObservableObject {
 
     private func saveRoots() {
         UserDefaults.standard.set(searchRoots.map(\.path), forKey: defaultsKey)
+    }
+
+    private static func migrateLegacyDefaultsIfNeeded() {
+        let current = UserDefaults.standard
+        guard current.object(forKey: "siftMigratedDevSweepDefaults") == nil else { return }
+        if let legacy = UserDefaults(suiteName: "com.dominikhait.devsweep") {
+            if current.object(forKey: "searchRoots") == nil,
+               let roots = legacy.stringArray(forKey: "searchRoots") {
+                current.set(roots, forKey: "searchRoots")
+            }
+            if current.object(forKey: "lastSuccessfulScanDate") == nil,
+               let date = legacy.object(forKey: "lastSuccessfulScanDate") as? Date {
+                current.set(date, forKey: "lastSuccessfulScanDate")
+            }
+        }
+        current.set(true, forKey: "siftMigratedDevSweepDefaults")
     }
 
     private static func defaultSearchRoots() -> [URL] {

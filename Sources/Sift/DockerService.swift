@@ -102,7 +102,7 @@ struct DockerService: Sendable {
         }
 
         if normalized.contains("permission denied") {
-            return "Docker is running, but DevSweep cannot access it"
+            return "Docker is running, but Sift cannot access it"
         }
 
         return "Docker is unavailable right now"

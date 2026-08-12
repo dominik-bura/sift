@@ -37,7 +37,7 @@ struct UpdateService: Sendable {
     }
 
     var repository: String? {
-        guard let value = bundle.object(forInfoDictionaryKey: "DevSweepUpdateRepository") as? String,
+        guard let value = bundle.object(forInfoDictionaryKey: "SiftUpdateRepository") as? String,
               Self.isValidRepository(value) else { return nil }
         return value
     }
@@ -49,13 +49,13 @@ struct UpdateService: Sendable {
         }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 15)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("DevSweep/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        request.setValue("Sift/\(currentVersion)", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session().data(for: request)
         try Self.validate(response: response, allowedHosts: ["api.github.com"])
         let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
         let version = release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
         guard Self.compareVersions(version, currentVersion) == .orderedDescending else { return nil }
-        guard let archive = release.assets.first(where: { $0.name.hasPrefix("DevSweep-") && $0.name.hasSuffix(".zip") }),
+        guard let archive = release.assets.first(where: { $0.name.hasPrefix("Sift-") && $0.name.hasSuffix(".zip") }),
               Self.isAllowedDownloadURL(archive.browserDownloadURL),
               archive.browserDownloadURL.path.hasPrefix("/\(repository)/releases/download/"),
               Self.isAllowedReleaseURL(release.htmlURL),
@@ -89,9 +89,9 @@ struct UpdateService: Sendable {
         }
 
         let stagingRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("DevSweepUpdate-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SiftUpdate-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
-        let archiveURL = stagingRoot.appendingPathComponent("DevSweep.zip")
+        let archiveURL = stagingRoot.appendingPathComponent("Sift.zip")
         try FileManager.default.moveItem(at: downloadedURL, to: archiveURL)
         let result = SecureCommandRunner().run(
             URL(fileURLWithPath: "/usr/bin/ditto"),
@@ -99,7 +99,7 @@ struct UpdateService: Sendable {
             timeout: 60
         )
         guard result.exitCode == 0 else { throw UpdateError.invalidArchive }
-        let appURL = stagingRoot.appendingPathComponent("DevSweep.app", isDirectory: true)
+        let appURL = stagingRoot.appendingPathComponent("Sift.app", isDirectory: true)
         let resolvedApp = appURL.resolvingSymlinksInPath().standardizedFileURL
         guard resolvedApp.path.hasPrefix(stagingRoot.standardizedFileURL.path + "/") else {
             throw UpdateError.invalidApplication
@@ -111,13 +111,13 @@ struct UpdateService: Sendable {
     @MainActor
     func launchInstaller(for stagedApp: URL) throws {
         let currentApp = bundle.bundleURL.standardizedFileURL
-        guard currentApp.pathExtension == "app", currentApp.lastPathComponent == "DevSweep.app" else {
+        guard currentApp.pathExtension == "app", currentApp.lastPathComponent == "Sift.app" else {
             throw UpdateError.notRunningFromApplication
         }
         guard FileManager.default.isWritableFile(atPath: currentApp.deletingLastPathComponent().path) else {
             throw UpdateError.installLocationNotWritable
         }
-        let helper = currentApp.appendingPathComponent("Contents/Helpers/DevSweepUpdater")
+        let helper = currentApp.appendingPathComponent("Contents/Helpers/SiftUpdater")
         guard FileManager.default.isExecutableFile(atPath: helper.path) else { throw UpdateError.missingInstaller }
         let process = Process()
         process.executableURL = helper
@@ -147,10 +147,10 @@ struct UpdateService: Sendable {
         guard let candidate = Bundle(url: url),
               candidate.bundleIdentifier == bundle.bundleIdentifier,
               candidate.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == expectedVersion,
-              candidate.object(forInfoDictionaryKey: "DevSweepUpdateRepository") as? String == repository,
+              candidate.object(forInfoDictionaryKey: "SiftUpdateRepository") as? String == repository,
               (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
               FileManager.default.isExecutableFile(
-                atPath: url.appendingPathComponent("Contents/Helpers/DevSweepUpdater").path
+                atPath: url.appendingPathComponent("Contents/Helpers/SiftUpdater").path
               ) else {
             throw UpdateError.invalidApplication
         }
@@ -271,9 +271,9 @@ enum UpdateError: LocalizedError, Equatable {
         case .missingChecksum: return "The release has no SHA-256 checksum"
         case .checksumMismatch: return "The downloaded update failed verification"
         case .invalidArchive: return "The update archive could not be opened"
-        case .invalidApplication: return "The update is not a valid DevSweep app"
+        case .invalidApplication: return "The update is not a valid Sift app"
         case .invalidSignature: return "The update's code signature is invalid"
-        case .notRunningFromApplication: return "Run DevSweep from its app bundle to update"
+        case .notRunningFromApplication: return "Run Sift from its app bundle to update"
         case .installLocationNotWritable: return "This installation cannot be updated in place"
         case .missingInstaller: return "The update helper is missing"
         }

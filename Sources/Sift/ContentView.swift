@@ -3,7 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @State private var confirmation: CleanupConfirmation?
-    @State private var showRoots = false
+    @State private var showSettings = false
     @State private var expandedWorkspaceIDs = Set<String>()
     @State private var collapsedRepositoryIDs = Set<String>()
 
@@ -19,7 +19,6 @@ struct ContentView: View {
                             dockerCard
                             globalCachesSection
                             worktreesSection
-                            settingsSection
                         }
                     }
                     .padding(.horizontal, 18)
@@ -29,6 +28,11 @@ struct ContentView: View {
                 footer
             }
 
+            if showSettings {
+                settingsOverlay
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottomLeading)))
+            }
+
             if let confirmation {
                 confirmationOverlay(confirmation)
                     .transition(.opacity.combined(with: .scale(scale: 0.97)))
@@ -36,9 +40,10 @@ struct ContentView: View {
         }
         .frame(width: 460, height: 660)
         .background(.ultraThinMaterial)
-        .tint(DevSweepTheme.accent)
+        .tint(SiftTheme.accent)
         .task { if model.workspaces.isEmpty { model.scan() } }
         .animation(.easeInOut(duration: 0.14), value: confirmation)
+        .animation(.easeInOut(duration: 0.14), value: showSettings)
     }
 
     private func confirmationOverlay(_ kind: CleanupConfirmation) -> some View {
@@ -47,7 +52,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 15) {
                 HStack(spacing: 10) {
                     Image(systemName: kind.symbolName)
-                        .font(.title2).foregroundStyle(kind.isUpdate ? DevSweepTheme.accent : (kind == .docker ? .blue : .red))
+                        .font(.title2).foregroundStyle(kind.isUpdate ? SiftTheme.accent : (kind == .docker ? .blue : .red))
                     Text(kind.title(model: model))
                         .font(.headline)
                 }
@@ -68,7 +73,7 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(kind.isUpdate ? DevSweepTheme.accent : .red)
+                    .tint(kind.isUpdate ? SiftTheme.accent : .red)
                     .controlSize(.large)
 
                     Button("Cancel") { confirmation = nil }
@@ -76,7 +81,7 @@ struct ContentView: View {
                 }
             }
             .padding(20).frame(width: 330)
-            .devSweepGlassSurface(cornerRadius: 18, interactive: false)
+            .siftGlassSurface(cornerRadius: 18, interactive: false)
             .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
         }
         .onExitCommand { confirmation = nil }
@@ -87,11 +92,16 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(DevSweepTheme.brandGradient)
-                    Image(systemName: "paintbrush.fill").font(.system(size: 17, weight: .semibold)).foregroundStyle(.white)
+                        .fill(SiftTheme.brandGradient)
+                    Image("SiftMenuBarIconTemplate")
+                        .renderingMode(.template)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 20, height: 20)
+                        .foregroundStyle(.white)
                 }
                 .frame(width: 34, height: 34)
-                Text("DevSweep").font(.title2.weight(.bold))
+                Text("Sift").font(.title2.weight(.bold))
                 Spacer()
                 VStack(alignment: .trailing, spacing: 3) {
                     Button { model.scan() } label: {
@@ -133,7 +143,7 @@ struct ContentView: View {
                     GeometryReader { proxy in
                         ZStack(alignment: .leading) {
                             Capsule().fill(.quaternary)
-                            Capsule().fill(DevSweepTheme.brandGradient)
+                            Capsule().fill(SiftTheme.brandGradient)
                                 .frame(width: proxy.size.width * storageFreeFraction)
                         }
                     }
@@ -163,7 +173,7 @@ struct ContentView: View {
 
             VStack(spacing: 5) {
                 Text("Looking for reclaimable space…").font(.headline)
-                Text("DevSweep is checking Git worktrees, generated dependencies, build output, and Docker images.")
+                Text("Sift is checking Git worktrees, generated dependencies, build output, and Docker images.")
                     .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     .frame(maxWidth: 310)
             }
@@ -199,7 +209,7 @@ struct ContentView: View {
                 case .checking:
                     ProgressView()
                         .controlSize(.small)
-                        .tint(DevSweepTheme.accent)
+                        .tint(SiftTheme.accent)
                         .accessibilityLabel("Checking Docker")
                 case let .available(bytes, _) where bytes > 0:
                     Button("Clean") { confirmation = .docker }.disabled(model.isCleaning)
@@ -414,29 +424,81 @@ struct ContentView: View {
         }
     }
 
-    private var settingsSection: some View {
-        VStack(spacing: 8) {
-            DisclosureGroup(isExpanded: $showRoots) {
-                VStack(spacing: 8) {
-                    ForEach(model.searchRoots, id: \.path) { root in
-                        HStack {
-                            Text(root.path).font(.caption).lineLimit(1).truncationMode(.middle)
-                            Spacer()
-                            Button { model.removeSearchRoot(root) } label: { Image(systemName: "minus.circle") }.buttonStyle(.plain)
-                        }
+    private var settingsOverlay: some View {
+        ZStack(alignment: .bottomLeading) {
+            Color.black.opacity(0.38).ignoresSafeArea().contentShape(Rectangle())
+            VStack(spacing: 0) {
+                HStack(spacing: 11) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous).fill(SiftTheme.brandGradient)
+                        Image("SiftMenuBarIconTemplate")
+                            .renderingMode(.template)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 18, height: 18)
+                            .foregroundStyle(.white)
                     }
-                    Button { model.addSearchRoot() } label: { Label("Add project folder", systemImage: "plus") }
-                        .buttonStyle(.plain).frame(maxWidth: .infinity, alignment: .leading)
-                }.padding(.top, 8)
-            } label: {
-                Label("Scanned folders", systemImage: "folder.badge.gearshape")
+                    .frame(width: 32, height: 32)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Sift Settings").font(.headline)
+                        Text(model.versionLabel).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button { showSettings = false } label: {
+                        Image(systemName: "xmark.circle.fill").font(.title3).foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain).help("Close Settings")
+                }
+                .padding(16)
+
+                Divider()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 9) {
+                            Text("SOFTWARE UPDATE").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            updateRow
+                            Text("Checks the public GitHub release feed only. Sift sends no telemetry or storage data.")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        }
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("SCANNED FOLDERS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                Spacer()
+                                Button { model.addSearchRoot() } label: { Label("Add", systemImage: "plus") }
+                                    .controlSize(.small)
+                            }
+                            ForEach(model.searchRoots, id: \.path) { root in
+                                HStack(spacing: 8) {
+                                    Image(systemName: "folder").foregroundStyle(.secondary)
+                                    Text(root.path).font(.caption).lineLimit(1).truncationMode(.middle)
+                                    Spacer(minLength: 6)
+                                    Button { model.removeSearchRoot(root) } label: {
+                                        Image(systemName: "minus.circle").foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain).help("Stop scanning this folder")
+                                }
+                            }
+                        }
+
+                        Label("Generated worktree folders move to Trash. Global cache commands are permanent and always require confirmation.", systemImage: "lock.shield.fill")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                    .padding(16)
+                }
+                .scrollIndicators(.hidden)
+                .frame(maxHeight: 390)
             }
-            Label("Generated worktree folders move to Trash. Global cache commands are separate, permanent, and require confirmation.", systemImage: "lock.shield.fill")
-                .font(.caption2).foregroundStyle(.tertiary)
-            Divider().padding(.vertical, 3)
-            updateRow
+            .frame(width: 390)
+            .siftGlassSurface(cornerRadius: 18, interactive: false)
+            .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
+            .padding(.leading, 16)
+            .padding(.bottom, 58)
         }
-        .padding(.top, 18)
+        .onExitCommand { showSettings = false }
     }
 
     private var updateRow: some View {
@@ -444,7 +506,7 @@ struct ContentView: View {
             Image(systemName: "arrow.triangle.2.circlepath.circle")
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text(model.versionLabel).font(.caption.weight(.medium))
+                Text("Updates").font(.caption.weight(.medium))
                 switch model.updateState {
                 case .unavailable:
                     Text("Updates are enabled in GitHub release builds")
@@ -453,7 +515,7 @@ struct ContentView: View {
                 case .checking:
                     Text("Checking GitHub…")
                 case .upToDate:
-                    Text("DevSweep is up to date")
+                    Text("Sift is up to date")
                 case let .available(release):
                     Text("Version \(release.version) is available")
                 case let .downloading(release):
@@ -467,7 +529,7 @@ struct ContentView: View {
             Spacer(minLength: 6)
             switch model.updateState {
             case .idle, .upToDate, .failed:
-                Button("Check") { Task { await model.checkForUpdates() } }
+                Button("Check now") { Task { await model.checkForUpdates() } }
                     .controlSize(.small)
             case let .available(release):
                 VStack(alignment: .trailing, spacing: 3) {
@@ -489,6 +551,12 @@ struct ContentView: View {
         VStack(spacing: 6) {
             if let message = model.lastMessage { Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
             HStack(spacing: 12) {
+                Button { showSettings = true } label: {
+                    Image(systemName: "gearshape.fill")
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary).help("Settings")
                 Label(freeSpaceText, systemImage: "internaldrive").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
@@ -503,7 +571,7 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
-        .devSweepGlassFooter()
+        .siftGlassFooter()
     }
 
     private var freeSpaceText: String {
@@ -560,7 +628,7 @@ private enum CleanupConfirmation: Equatable {
         case .global:
             return "This package manager performs permanent cache cleanup. Cached artifacts may need to be downloaded or rebuilt later; installed tools and project files remain untouched."
         case .update:
-            return "DevSweep will download the release from GitHub, verify its checksum, identity, version, and code signature, then replace and relaunch this app."
+            return "Sift will download the release from GitHub, verify its checksum, identity, version, and code signature, then replace and relaunch this app."
         }
     }
 
@@ -569,7 +637,7 @@ private enum CleanupConfirmation: Equatable {
         case .folders: return "Move selected folders to Trash?"
         case .docker: return "Remove unused Docker images?"
         case let .global(id): return "Clean \(model.globalCaches.first(where: { $0.id == id })?.name ?? "global cache")?"
-        case let .update(release): return "Install DevSweep \(release.version)?"
+        case let .update(release): return "Install Sift \(release.version)?"
         }
     }
 
@@ -609,7 +677,7 @@ private struct SelectionCheckbox: View {
         ZStack {
             ZStack {
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(state == .off ? Color.clear : DevSweepTheme.accent)
+                    .fill(state == .off ? Color.clear : SiftTheme.accent)
                     .overlay { RoundedRectangle(cornerRadius: 5).stroke(state == .off ? Color.secondary : Color.clear, lineWidth: 1.2) }
                 if state == .on { Image(systemName: "checkmark").font(.caption2.weight(.bold)).foregroundStyle(.white) }
                 if state == .mixed { Image(systemName: "minus").font(.caption2.weight(.bold)).foregroundStyle(.white) }
@@ -635,13 +703,13 @@ private struct Panel<Content: View>: View {
 
     var body: some View {
         content.padding(padding)
-            .devSweepGlassSurface(cornerRadius: 13, interactive: true)
+            .siftGlassSurface(cornerRadius: 13, interactive: true)
     }
 }
 
 private extension View {
     @ViewBuilder
-    func devSweepGlassSurface(cornerRadius: CGFloat, interactive: Bool) -> some View {
+    func siftGlassSurface(cornerRadius: CGFloat, interactive: Bool) -> some View {
         if #available(macOS 26.0, *) {
             let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             background(Color.primary.opacity(0.045), in: shape)
@@ -662,7 +730,7 @@ private extension View {
     }
 
     @ViewBuilder
-    func devSweepGlassFooter() -> some View {
+    func siftGlassFooter() -> some View {
         if #available(macOS 26.0, *) {
             glassEffect(.regular, in: Rectangle())
         } else {
@@ -672,7 +740,7 @@ private extension View {
     }
 }
 
-private enum DevSweepTheme {
+private enum SiftTheme {
     static let accent = Color(red: 0.96, green: 0.29, blue: 0.14)
     static let warmOrange = Color(red: 1.00, green: 0.49, blue: 0.12)
     static let brandGradient = LinearGradient(

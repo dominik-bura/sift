@@ -1,13 +1,13 @@
 import Foundation
 import XCTest
-@testable import DevSweep
+@testable import Sift
 
 final class CleanupSafetyTests: XCTestCase {
     private var temporaryRoot: URL!
 
     override func setUpWithError() throws {
         temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("DevSweepTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("SiftTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
     }
 
@@ -124,13 +124,13 @@ final class CleanupSafetyTests: XCTestCase {
     }
 
     func testUpdateRepositoryAndURLsAreRestrictedToGitHub() throws {
-        XCTAssertTrue(UpdateService.isValidRepository("owner/dev-sweep"))
-        XCTAssertFalse(UpdateService.isValidRepository("owner/dev-sweep/extra"))
+        XCTAssertTrue(UpdateService.isValidRepository("owner/sift"))
+        XCTAssertFalse(UpdateService.isValidRepository("owner/sift/extra"))
         XCTAssertFalse(UpdateService.isValidRepository("https://example.com/repo"))
 
-        XCTAssertTrue(UpdateService.isAllowedDownloadURL(try XCTUnwrap(URL(string: "https://github.com/owner/dev-sweep/releases/download/v1/DevSweep-1.zip"))))
-        XCTAssertFalse(UpdateService.isAllowedDownloadURL(try XCTUnwrap(URL(string: "https://example.com/DevSweep-1.zip"))))
-        XCTAssertFalse(UpdateService.isAllowedDownloadURL(try XCTUnwrap(URL(string: "http://github.com/owner/dev-sweep/releases/download/v1/DevSweep-1.zip"))))
+        XCTAssertTrue(UpdateService.isAllowedDownloadURL(try XCTUnwrap(URL(string: "https://github.com/owner/sift/releases/download/v1/Sift-1.zip"))))
+        XCTAssertFalse(UpdateService.isAllowedDownloadURL(try XCTUnwrap(URL(string: "https://example.com/Sift-1.zip"))))
+        XCTAssertFalse(UpdateService.isAllowedDownloadURL(try XCTUnwrap(URL(string: "http://github.com/owner/sift/releases/download/v1/Sift-1.zip"))))
     }
 
     func testDockerConnectionErrorsArePresentedWithoutSocketDetails() {
@@ -146,7 +146,7 @@ final class CleanupSafetyTests: XCTestCase {
     func testDockerPermissionErrorsHaveAnActionableMessage() {
         XCTAssertEqual(
             DockerService.userFacingError("permission denied while trying to connect"),
-            "Docker is running, but DevSweep cannot access it"
+            "Docker is running, but Sift cannot access it"
         )
     }
 

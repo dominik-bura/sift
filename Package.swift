@@ -2,27 +2,27 @@
 import PackageDescription
 
 let package = Package(
-    name: "DevSweep",
+    name: "Sift",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "DevSweep", targets: ["DevSweep"]),
-        .executable(name: "DevSweepUpdater", targets: ["DevSweepUpdater"])
+        .executable(name: "Sift", targets: ["Sift"]),
+        .executable(name: "SiftUpdater", targets: ["SiftUpdater"])
     ],
     targets: [
         .executableTarget(
-            name: "DevSweep",
-            path: "Sources/DevSweep"
+            name: "Sift",
+            path: "Sources/Sift"
         ),
         .executableTarget(
-            name: "DevSweepUpdater",
-            path: "Sources/DevSweepUpdater"
+            name: "SiftUpdater",
+            path: "Sources/SiftUpdater"
         ),
         .testTarget(
-            name: "DevSweepTests",
-            dependencies: ["DevSweep"],
-            path: "Tests/DevSweepTests"
+            name: "SiftTests",
+            dependencies: ["Sift"],
+            path: "Tests/SiftTests"
         )
     ],
     swiftLanguageModes: [.v5]
