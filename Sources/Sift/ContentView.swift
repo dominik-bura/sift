@@ -39,9 +39,8 @@ struct ContentView: View {
             }
         }
         .frame(width: 460, height: 660)
-        .background(.ultraThinMaterial)
         .tint(SiftTheme.accent)
-        .task { if model.workspaces.isEmpty { model.scan() } }
+        .onAppear { model.scanIfStale() }
         .animation(.easeInOut(duration: 0.14), value: confirmation)
         .animation(.easeInOut(duration: 0.14), value: showSettings)
     }
@@ -89,38 +88,40 @@ struct ContentView: View {
 
     private var summary: some View {
         VStack(alignment: .leading, spacing: 15) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(SiftTheme.brandGradient)
-                    Image("SiftMenuBarIconTemplate")
-                        .renderingMode(.template)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 20, height: 20)
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 34, height: 34)
-                Text("Sift").font(.title2.weight(.bold))
+            HStack(spacing: 10) {
+                Image(nsImage: SiftAssets.applicationIcon)
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .frame(width: 24, height: 24)
+                Text(model.applicationName)
+                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .tracking(-0.25)
+                    .baselineOffset(0.5)
                 Spacer()
-                VStack(alignment: .trailing, spacing: 3) {
-                    Button { model.scan() } label: {
-                        if model.isScanning { ProgressView().controlSize(.small) }
-                        else { Image(systemName: "arrow.clockwise") }
-                    }
-                    .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .disabled(model.isScanning || model.isCleaning)
-                    .help("Scan again")
-
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     if let lastSyncedAt = model.lastSyncedAt {
-                        Text("Last synced \(lastSyncedAt.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.tertiary)
+                        Text(
+                            "Last synced \(lastSyncedAt.formatted(.dateTime.day().month(.abbreviated))) · \(lastSyncedAt.formatted(.dateTime.hour().minute()))"
+                        )
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
                     } else {
                         Text("Not synced yet")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
+
+                    Button { model.scan() } label: {
+                        if model.isScanning { ProgressView().controlSize(.small) }
+                        else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 15, weight: .regular))
+                        }
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .disabled(model.isScanning || model.isCleaning)
+                    .help("Scan again")
                 }
             }
 
@@ -202,7 +203,6 @@ struct ContentView: View {
                     case let .available(bytes, detail):
                         Text(bytes > 0 ? "\(ByteFormatting.string(bytes)) reclaimable" : detail).foregroundStyle(.secondary)
                     }
-                    Text("Preserves all containers and volumes").font(.caption2).foregroundStyle(.tertiary)
                 }
                 Spacer()
                 switch model.dockerState {
@@ -238,13 +238,17 @@ struct ContentView: View {
                                     Image(systemName: cache.symbolName).foregroundStyle(.orange).frame(width: 25)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(cache.name).font(.callout.weight(.semibold))
-                                        Text(cache.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                                         if case let .available(_, path) = cache.state {
                                             Text(path).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
                                         }
                                     }
                                     Spacer(minLength: 6)
-                                    if cache.bytes > 0 {
+                                    if case .checking = cache.state {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .tint(SiftTheme.accent)
+                                            .accessibilityLabel("Measuring \(cache.name)")
+                                    } else if cache.bytes > 0 {
                                         Text(ByteFormatting.string(cache.bytes)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                                         Button("Clean") { confirmation = .global(cache.id) }
                                             .disabled(model.isCleaning)
@@ -266,7 +270,7 @@ struct ContentView: View {
 
     private var worktreesSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if model.isScanning {
+            if model.isScanning && !model.isBackgroundRefreshing {
                 scanProgress
             }
             if !model.workspaces.isEmpty {
@@ -320,7 +324,7 @@ struct ContentView: View {
             Spacer()
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
-        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .siftGlassSurface(cornerRadius: 10, interactive: false)
     }
 
     private func repositorySection(_ repository: RepositoryGroup) -> some View {
@@ -334,11 +338,10 @@ struct ContentView: View {
                 }
             } label: {
                 HStack(spacing: 9) {
-                    Image(systemName: "folder").font(.title3).foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 1) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text(repository.name).font(.headline).lineLimit(1)
-                        Text("\(repository.workspaces.count) worktree\(repository.workspaces.count == 1 ? "" : "s")")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Text("\(repository.workspaces.count)")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
                     }
                     Spacer()
                     Text(ByteFormatting.string(repository.reclaimableBytes))
@@ -352,32 +355,35 @@ struct ContentView: View {
             .buttonStyle(.plain)
 
             if !isCollapsed {
-                VStack(spacing: 8) {
-                    ForEach(repository.workspaces) { workspace in workspaceCard(workspace) }
+                Panel(padding: 0) {
+                    VStack(spacing: 0) {
+                        ForEach(Array(repository.workspaces.enumerated()), id: \.element.id) { index, workspace in
+                            if index > 0 { Divider() }
+                            workspaceRow(workspace)
+                        }
+                    }
                 }
                 .transition(.opacity)
             }
         }
     }
 
-    private func workspaceCard(_ workspace: Workspace) -> some View {
+    private func workspaceRow(_ workspace: Workspace) -> some View {
         let selectedCount = model.selectedCount(in: workspace)
         let state: SelectionState = selectedCount == 0 ? .off : (selectedCount == workspace.candidates.count ? .on : .mixed)
         let expanded = expandedWorkspaceIDs.contains(workspace.id)
 
-        return Panel(padding: 0) {
-            VStack(spacing: 0) {
+        return VStack(spacing: 0) {
                 HStack(spacing: 10) {
                     SelectionCheckbox(state: state) { model.toggleWorkspaceSelection(workspace) }
                     Button { toggleExpansion(workspace) } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: "folder").font(.title3).foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 7) {
                                     Text(workspace.name).font(.headline).lineLimit(1)
                                     Text(workspace.branch).font(.caption)
                                         .padding(.horizontal, 7).padding(.vertical, 2)
-                                        .background(.quaternary, in: Capsule()).lineLimit(1)
+                                        .siftGlassCapsule().lineLimit(1)
                                 }
                                 Text(workspace.url.path).font(.caption).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
@@ -420,27 +426,24 @@ struct ContentView: View {
                     }
                     .transition(.opacity)
                 }
-            }
         }
     }
 
     private var settingsOverlay: some View {
         ZStack(alignment: .bottomLeading) {
-            Color.black.opacity(0.38).ignoresSafeArea().contentShape(Rectangle())
+            Color.black.opacity(0.38)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { showSettings = false }
             VStack(spacing: 0) {
                 HStack(spacing: 11) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous).fill(SiftTheme.brandGradient)
-                        Image("SiftMenuBarIconTemplate")
-                            .renderingMode(.template)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 18, height: 18)
-                            .foregroundStyle(.white)
-                    }
+                    Image(nsImage: SiftAssets.applicationIcon)
+                        .resizable()
+                        .scaledToFit()
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .frame(width: 32, height: 32)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("Sift Settings").font(.headline)
+                        Text("\(model.applicationName) Settings").font(.headline)
                         Text(model.versionLabel).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -458,7 +461,7 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 9) {
                             Text("SOFTWARE UPDATE").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                             updateRow
-                            Text("Checks the public GitHub release feed only. Sift sends no telemetry or storage data.")
+                            Text("Sift checks for updates without sending telemetry or storage data.")
                                 .font(.caption2).foregroundStyle(.tertiary)
                         }
 
@@ -509,11 +512,11 @@ struct ContentView: View {
                 Text("Updates").font(.caption.weight(.medium))
                 switch model.updateState {
                 case .unavailable:
-                    Text("Updates are enabled in GitHub release builds")
+                    Text("Update available")
                 case .idle:
-                    Text("Ready to check GitHub for updates")
+                    Text("Ready to check for updates")
                 case .checking:
-                    Text("Checking GitHub…")
+                    Text("Checking for updates…")
                 case .upToDate:
                     Text("Sift is up to date")
                 case let .available(release):
@@ -628,7 +631,7 @@ private enum CleanupConfirmation: Equatable {
         case .global:
             return "This package manager performs permanent cache cleanup. Cached artifacts may need to be downloaded or rebuilt later; installed tools and project files remain untouched."
         case .update:
-            return "Sift will download the release from GitHub, verify its checksum, identity, version, and code signature, then replace and relaunch this app."
+            return "Sift will download the update, verify its checksum, identity, version, and code signature, then replace and relaunch this app."
         }
     }
 
@@ -662,7 +665,7 @@ private struct LoadingRow: View {
             RoundedRectangle(cornerRadius: 4).fill(.quaternary).frame(width: 48, height: 11)
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
-        .background(.quinary.opacity(0.45), in: RoundedRectangle(cornerRadius: 11))
+        .siftGlassSurface(cornerRadius: 11, interactive: false)
         .redacted(reason: .placeholder)
     }
 }
@@ -703,7 +706,9 @@ private struct Panel<Content: View>: View {
 
     var body: some View {
         content.padding(padding)
-            .siftGlassSurface(cornerRadius: 13, interactive: true)
+            .background {
+                BehindWindowContentMaterial(cornerRadius: 13)
+            }
     }
 }
 
@@ -712,11 +717,7 @@ private extension View {
     func siftGlassSurface(cornerRadius: CGFloat, interactive: Bool) -> some View {
         if #available(macOS 26.0, *) {
             let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            background(Color.primary.opacity(0.045), in: shape)
-                .glassEffect(.regular.interactive(interactive), in: shape)
-                .overlay {
-                    shape.stroke(Color.primary.opacity(0.11), lineWidth: 0.5)
-                }
+            glassEffect(.clear.interactive(interactive), in: shape)
         } else {
             background(
                 .quinary.opacity(0.6),
@@ -737,6 +738,36 @@ private extension View {
             background(.regularMaterial)
                 .overlay(alignment: .top) { Divider() }
         }
+    }
+
+    @ViewBuilder
+    func siftGlassCapsule() -> some View {
+        if #available(macOS 26.0, *) {
+            glassEffect(.clear, in: Capsule())
+        } else {
+            background(.quaternary, in: Capsule())
+        }
+    }
+}
+
+private struct BehindWindowContentMaterial: NSViewRepresentable {
+    let cornerRadius: CGFloat
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .popover
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.alphaValue = 0.78
+        view.wantsLayer = true
+        view.layer?.cornerCurve = .continuous
+        view.layer?.cornerRadius = cornerRadius
+        view.layer?.masksToBounds = true
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.layer?.cornerRadius = cornerRadius
     }
 }
 

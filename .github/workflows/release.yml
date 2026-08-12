@@ -46,13 +46,17 @@ jobs:
 
       - name: Build release
         env:
+          SIFT_BUILD_CHANNEL: production
           SIFT_VERSION: 0.1.${{ github.run_number }}
           SIFT_BUILD_NUMBER: ${{ github.run_number }}
           SIFT_UPDATE_REPOSITORY: ${{ github.repository }}
           SIFT_UNIVERSAL: 1
         run: ./scripts/build-app.sh release
 
-      - name: Notarize signed app
+      - name: Build DevSweep migration bridge
+        run: ./scripts/create-legacy-update-app.sh build/Sift.app build/DevSweep.app "${SIFT_CODESIGN_IDENTITY:--}"
+
+      - name: Notarize signed apps
         if: ${{ env.APPLE_CERTIFICATE_BASE64 != '' && env.APPLE_SIGNING_IDENTITY != '' && env.APPLE_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != '' && env.APPLE_TEAM_ID != '' }}
         run: |
           ditto -c -k --keepParent build/Sift.app "${RUNNER_TEMP}/Sift-notarization.zip"
@@ -63,6 +67,14 @@ jobs:
             --wait
           xcrun stapler staple build/Sift.app
           xcrun stapler validate build/Sift.app
+          ditto -c -k --keepParent build/DevSweep.app "${RUNNER_TEMP}/DevSweep-notarization.zip"
+          xcrun notarytool submit "${RUNNER_TEMP}/DevSweep-notarization.zip" \
+            --apple-id "${APPLE_ID}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
+            --wait
+          xcrun stapler staple build/DevSweep.app
+          xcrun stapler validate build/DevSweep.app
 
       - name: Package release assets
         env:
@@ -70,6 +82,7 @@ jobs:
         run: |
           mkdir -p dist
           ditto -c -k --keepParent build/Sift.app "dist/Sift-${VERSION}.zip"
+          ditto -c -k --keepParent build/DevSweep.app "dist/DevSweep-${VERSION}.zip"
           ./scripts/create-dmg.sh build/Sift.app "dist/Sift-${VERSION}.dmg"
           if [[ -n "${SIFT_CODESIGN_IDENTITY:-}" ]]; then
             codesign --force --sign "${SIFT_CODESIGN_IDENTITY}" "dist/Sift-${VERSION}.dmg"
@@ -93,6 +106,7 @@ jobs:
           VERSION: 0.1.${{ github.run_number }}
         run: |
           shasum -a 256 "dist/Sift-${VERSION}.zip" > "dist/Sift-${VERSION}.zip.sha256"
+          shasum -a 256 "dist/DevSweep-${VERSION}.zip" > "dist/DevSweep-${VERSION}.zip.sha256"
           shasum -a 256 "dist/Sift-${VERSION}.dmg" > "dist/Sift-${VERSION}.dmg.sha256"
 
       - name: Create GitHub release

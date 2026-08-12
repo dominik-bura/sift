@@ -11,13 +11,31 @@ func waitForExit(pid: pid_t, timeout: TimeInterval = 30) throws {
     }
 }
 
-func validatedBundle(_ rawPath: String) throws -> URL {
+func validatedCurrentBundle(_ rawPath: String) throws -> URL {
+    let url = URL(fileURLWithPath: rawPath, isDirectory: true).standardizedFileURL
+    let supportedNames = ["Sift.app", "DevSweep.app"]
+    let supportedIdentifiers = [
+        "com.dominikbura.sift",
+        "com.dominikhait.sift",
+        "com.dominikhait.devsweep"
+    ]
+    guard supportedNames.contains(url.lastPathComponent),
+          !url.path.contains("\n"), !url.path.contains("\r"),
+          (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+          let bundle = Bundle(url: url),
+          bundle.bundleIdentifier.map(supportedIdentifiers.contains) == true else {
+        throw UpdaterFailure.invalidBundle
+    }
+    return url
+}
+
+func validatedStagedBundle(_ rawPath: String) throws -> URL {
     let url = URL(fileURLWithPath: rawPath, isDirectory: true).standardizedFileURL
     guard url.lastPathComponent == "Sift.app",
           !url.path.contains("\n"), !url.path.contains("\r"),
           (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
           let bundle = Bundle(url: url),
-          bundle.bundleIdentifier == "com.dominikhait.sift" else {
+          bundle.bundleIdentifier == "com.dominikbura.sift" else {
         throw UpdaterFailure.invalidBundle
     }
     return url
@@ -28,8 +46,8 @@ do {
     guard arguments.count == 4, let parentPID = pid_t(arguments[3]), parentPID > 1 else {
         throw UpdaterFailure.invalidArguments
     }
-    let current = try validatedBundle(arguments[1])
-    let staged = try validatedBundle(arguments[2])
+    let current = try validatedCurrentBundle(arguments[1])
+    let staged = try validatedStagedBundle(arguments[2])
     let fileManager = FileManager.default
     let parent = current.deletingLastPathComponent()
     guard fileManager.isWritableFile(atPath: parent.path) else { throw UpdaterFailure.invalidBundle }

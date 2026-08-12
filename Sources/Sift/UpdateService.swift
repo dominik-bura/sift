@@ -37,7 +37,9 @@ struct UpdateService: Sendable {
     }
 
     var repository: String? {
-        guard let value = bundle.object(forInfoDictionaryKey: "SiftUpdateRepository") as? String,
+        let value = (bundle.object(forInfoDictionaryKey: "SiftUpdateRepository") as? String)
+            ?? (bundle.object(forInfoDictionaryKey: "DevSweepUpdateRepository") as? String)
+        guard let value,
               Self.isValidRepository(value) else { return nil }
         return value
     }
@@ -111,14 +113,18 @@ struct UpdateService: Sendable {
     @MainActor
     func launchInstaller(for stagedApp: URL) throws {
         let currentApp = bundle.bundleURL.standardizedFileURL
-        guard currentApp.pathExtension == "app", currentApp.lastPathComponent == "Sift.app" else {
+        guard currentApp.pathExtension == "app",
+              Self.isSupportedCurrentApplicationName(currentApp.lastPathComponent) else {
             throw UpdateError.notRunningFromApplication
         }
         guard FileManager.default.isWritableFile(atPath: currentApp.deletingLastPathComponent().path) else {
             throw UpdateError.installLocationNotWritable
         }
-        let helper = currentApp.appendingPathComponent("Contents/Helpers/SiftUpdater")
-        guard FileManager.default.isExecutableFile(atPath: helper.path) else { throw UpdateError.missingInstaller }
+        let helpers = currentApp.appendingPathComponent("Contents/Helpers", isDirectory: true)
+        let helper = ["SiftUpdater", "DevSweepUpdater"]
+            .map { helpers.appendingPathComponent($0) }
+            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+        guard let helper else { throw UpdateError.missingInstaller }
         let process = Process()
         process.executableURL = helper
         process.arguments = [currentApp.path, stagedApp.path, String(ProcessInfo.processInfo.processIdentifier)]
@@ -145,9 +151,12 @@ struct UpdateService: Sendable {
 
     private func validateApplication(at url: URL, expectedVersion: String) throws {
         guard let candidate = Bundle(url: url),
-              candidate.bundleIdentifier == bundle.bundleIdentifier,
+              Self.isAllowedBundleTransition(
+                from: bundle.bundleIdentifier,
+                to: candidate.bundleIdentifier
+              ),
               candidate.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == expectedVersion,
-              candidate.object(forInfoDictionaryKey: "SiftUpdateRepository") as? String == repository,
+              Self.updateRepository(in: candidate) == repository,
               (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
               FileManager.default.isExecutableFile(
                 atPath: url.appendingPathComponent("Contents/Helpers/SiftUpdater").path
@@ -192,6 +201,17 @@ struct UpdateService: Sendable {
         value.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
     }
 
+    static func isSupportedCurrentApplicationName(_ name: String) -> Bool {
+        name == "Sift.app" || name == "DevSweep.app"
+    }
+
+    static func isAllowedBundleTransition(from current: String?, to candidate: String?) -> Bool {
+        guard let current, let candidate else { return false }
+        return candidate == current
+            || (["com.dominikhait.devsweep", "com.dominikhait.sift"].contains(current)
+                && candidate == "com.dominikbura.sift")
+    }
+
     static func isAllowedDownloadURL(_ url: URL) -> Bool {
         url.scheme == "https" && url.host == "github.com" && url.path.contains("/releases/download/")
     }
@@ -210,6 +230,11 @@ struct UpdateService: Sendable {
             if l > r { return .orderedDescending }
         }
         return .orderedSame
+    }
+
+    private static func updateRepository(in bundle: Bundle) -> String? {
+        (bundle.object(forInfoDictionaryKey: "SiftUpdateRepository") as? String)
+            ?? (bundle.object(forInfoDictionaryKey: "DevSweepUpdateRepository") as? String)
     }
 
     private static func validate(response: URLResponse, allowedHosts: Set<String>) throws {
@@ -265,9 +290,9 @@ enum UpdateError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .notConfigured: return "Updates become available in GitHub release builds"
-        case .invalidResponse: return "GitHub returned an invalid response"
-        case .invalidRelease: return "The latest GitHub release is incomplete"
+        case .notConfigured: return "Update available"
+        case .invalidResponse: return "The update service returned an invalid response"
+        case .invalidRelease: return "The latest release is incomplete"
         case .missingChecksum: return "The release has no SHA-256 checksum"
         case .checksumMismatch: return "The downloaded update failed verification"
         case .invalidArchive: return "The update archive could not be opened"

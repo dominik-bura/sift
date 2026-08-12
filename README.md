@@ -1,6 +1,10 @@
-# Sift
+<p align="center">
+  <img src="App/Assets/SiftAppIcon-1024.png" width="128" height="128" alt="Sift app icon">
+</p>
 
-**A native macOS menu-bar app for safely reclaiming developer storage.**
+<h1 align="center">Sift</h1>
+
+<p align="center"><strong>A native macOS menu-bar app for safely reclaiming developer storage.</strong></p>
 
 Sift finds regenerable files across Git worktrees—such as `node_modules`, `.next`, and `.venv`—and lets you move them to macOS Trash without deleting your projects. It also shows reclaimable Docker images and common global developer caches in one place.
 
@@ -69,7 +73,7 @@ git clone https://github.com/dominik-bura/sift.git
 cd sift
 swift test
 ./scripts/build-app.sh
-open build/Sift.app
+open "build/Sift Dev.app"
 ```
 
 For development, you can run the app directly with:
@@ -77,6 +81,8 @@ For development, you can run the app directly with:
 ```bash
 swift run Sift
 ```
+
+Local builds use the separate `Sift Dev.app` identity, keep their own preferences, and have update checks disabled. Production `Sift.app` bundles are created only by the release workflow.
 
 Sift is built with SwiftUI, AppKit, and Apple system frameworks. Optional cleanup integrations invoke supported developer tools already installed on your Mac.
 

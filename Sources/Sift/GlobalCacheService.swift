@@ -31,6 +31,19 @@ struct GlobalCacheService: Sendable {
         definitions.compactMap(inspect)
     }
 
+    func installedPlaceholders() -> [GlobalCache] {
+        definitions.compactMap { definition in
+            guard TrustedExecutable.find(definition.executable) != nil else { return nil }
+            return GlobalCache(
+                id: definition.id,
+                name: definition.name,
+                detail: definition.detail,
+                symbolName: definition.symbol,
+                state: .checking
+            )
+        }
+    }
+
     func clean(id: String) throws {
         guard let definition = definitions.first(where: { $0.id == id }),
               let executable = TrustedExecutable.find(definition.executable) else {

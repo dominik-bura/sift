@@ -7,7 +7,7 @@
     <key>CFBundleExecutable</key>
     <string>Sift</string>
     <key>CFBundleIdentifier</key>
-    <string>com.dominikhait.sift</string>
+    <string>com.dominikbura.sift</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleIconFile</key>

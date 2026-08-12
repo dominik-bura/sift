@@ -8,6 +8,7 @@ final class AppModel: ObservableObject {
     @Published var globalCaches: [GlobalCache] = []
     @Published var selectedCandidateIDs = Set<String>()
     @Published var isScanning = false
+    @Published var isBackgroundRefreshing = false
     @Published var scannedWorkspaceCount = 0
     @Published var discoveredWorkspaceCount = 0
     @Published var reusedCandidateSizeCount = 0
@@ -29,7 +30,9 @@ final class AppModel: ObservableObject {
     private let lastSyncedKey = "lastSuccessfulScanDate"
 
     init() {
-        Self.migrateLegacyDefaultsIfNeeded()
+        if Bundle.main.bundleIdentifier == "com.dominikbura.sift" {
+            Self.migrateLegacyDefaultsIfNeeded()
+        }
         let defaults = Self.defaultSearchRoots()
         if let stored = UserDefaults.standard.stringArray(forKey: defaultsKey), !stored.isEmpty {
             let combined = stored.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL } + defaults
@@ -38,7 +41,7 @@ final class AppModel: ObservableObject {
             searchRoots = defaults
         }
         workspaces = scanCache.load(under: searchRoots)
-        selectedCandidateIDs = Set(workspaces.flatMap(\.candidates).map(\.id))
+        globalCaches = globalCacheService.installedPlaceholders()
         lastSyncedAt = UserDefaults.standard.object(forKey: lastSyncedKey) as? Date
         if updateService.repository == nil {
             updateState = .unavailable
@@ -57,7 +60,16 @@ final class AppModel: ObservableObject {
     var candidates: [CleanupCandidate] { workspaces.flatMap(\.candidates) }
     var selectedCandidates: [CleanupCandidate] { candidates.filter { selectedCandidateIDs.contains($0.id) } }
     var selectedBytes: Int64 { selectedCandidates.reduce(0) { $0 + $1.allocatedBytes } }
-    var versionLabel: String { "Version \(updateService.currentVersion) (\(updateService.buildNumber))" }
+    var applicationName: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Sift"
+    }
+    var versionLabel: String {
+        if Bundle.main.object(forInfoDictionaryKey: "SiftBuildChannel") as? String == "development" {
+            let reference = Bundle.main.object(forInfoDictionaryKey: "SiftBuildReference") as? String ?? "unknown"
+            return "Development build · \(reference)"
+        }
+        return "Version \(updateService.currentVersion) (\(updateService.buildNumber))"
+    }
     var totalReclaimableBytes: Int64 {
         workspaces.reduce(0) { $0 + $1.reclaimableBytes }
             + dockerState.reclaimableBytes
@@ -78,9 +90,10 @@ final class AppModel: ObservableObject {
             }
     }
 
-    func scan() {
+    func scan(inBackground: Bool = false) {
         guard !isScanning else { return }
         isScanning = true
+        isBackgroundRefreshing = inBackground
         scannedWorkspaceCount = 0
         discoveredWorkspaceCount = 0
         reusedCandidateSizeCount = 0
@@ -93,7 +106,7 @@ final class AppModel: ObservableObject {
         let globalCacheService = globalCacheService
 
         Task {
-            dockerState = .checking
+            if !inBackground { dockerState = .checking }
 
             Task {
                 let newDockerState = await Task.detached(priority: .utility) { docker.status() }.value
@@ -116,15 +129,27 @@ final class AppModel: ObservableObject {
             }
 
             let previousByPath = Dictionary(uniqueKeysWithValues: workspaces.map { ($0.url.path, $0) })
-            var refreshed = await scanBatch(knownWorkspaceURLs, scanner: scanner, existing: [], previousByPath: previousByPath)
+            var refreshed = await scanBatch(
+                knownWorkspaceURLs,
+                scanner: scanner,
+                existing: [],
+                previousByPath: previousByPath,
+                publishesProgressively: !inBackground
+            )
             if !refreshed.isEmpty { scanCache.save(refreshed) }
             let knownPaths = Set(knownWorkspaceURLs.map(\.path))
             let generalWorkspaceURLs = await generalDiscovery.value.filter { !knownPaths.contains($0.path) }
             discoveredWorkspaceCount += generalWorkspaceURLs.count
-            refreshed = await scanBatch(generalWorkspaceURLs, scanner: scanner, existing: refreshed, previousByPath: previousByPath)
+            refreshed = await scanBatch(
+                generalWorkspaceURLs,
+                scanner: scanner,
+                existing: refreshed,
+                previousByPath: previousByPath,
+                publishesProgressively: !inBackground
+            )
 
             workspaces = refreshed
-            selectedCandidateIDs = Set(refreshed.flatMap(\.candidates).map(\.id))
+            selectedCandidateIDs.formIntersection(refreshed.flatMap(\.candidates).map(\.id))
             scanCache.save(refreshed)
             let completedAt = Date()
             lastSyncedAt = completedAt
@@ -132,6 +157,18 @@ final class AppModel: ObservableObject {
             let elapsed = scanStartedAt.duration(to: .now)
             lastScanDuration = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
             isScanning = false
+            isBackgroundRefreshing = false
+        }
+    }
+
+    func scanIfStale(now: Date = Date(), maximumAge: TimeInterval = 60) {
+        guard !isScanning else { return }
+        guard !workspaces.isEmpty, let lastSyncedAt else {
+            scan()
+            return
+        }
+        if now.timeIntervalSince(lastSyncedAt) >= maximumAge {
+            scan(inBackground: true)
         }
     }
 
@@ -139,7 +176,8 @@ final class AppModel: ObservableObject {
         _ urls: [URL],
         scanner: WorkspaceScanner,
         existing: [Workspace],
-        previousByPath: [String: Workspace]
+        previousByPath: [String: Workspace],
+        publishesProgressively: Bool
     ) async -> [Workspace] {
         var refreshed = existing
         await withTaskGroup(of: WorkspaceScanResult.self) { group in
@@ -157,11 +195,12 @@ final class AppModel: ObservableObject {
                 measuredCandidateSizeCount += result.measuredSizeCount
                 if !workspace.candidates.isEmpty {
                     refreshed.append(workspace)
-                    workspaces = refreshed.sorted {
-                        if $0.reclaimableBytes == $1.reclaimableBytes { return $0.name < $1.name }
-                        return $0.reclaimableBytes > $1.reclaimableBytes
+                    if publishesProgressively {
+                        workspaces = refreshed.sorted {
+                            if $0.reclaimableBytes == $1.reclaimableBytes { return $0.name < $1.name }
+                            return $0.reclaimableBytes > $1.reclaimableBytes
+                        }
                     }
-                    selectedCandidateIDs = Set(workspaces.flatMap(\.candidates).map(\.id))
                 }
                 if let url = iterator.next() {
                     group.addTask { scanner.scanWorkspace(url, previous: previousByPath[url.path]) }
@@ -326,8 +365,11 @@ final class AppModel: ObservableObject {
 
     private static func migrateLegacyDefaultsIfNeeded() {
         let current = UserDefaults.standard
-        guard current.object(forKey: "siftMigratedDevSweepDefaults") == nil else { return }
-        if let legacy = UserDefaults(suiteName: "com.dominikhait.devsweep") {
+        let marker = "siftMigratedLegacyDefaults"
+        guard current.object(forKey: marker) == nil else { return }
+        let legacySuites = ["com.dominikhait.sift", "com.dominikhait.devsweep"]
+            .compactMap(UserDefaults.init(suiteName:))
+        for legacy in legacySuites {
             if current.object(forKey: "searchRoots") == nil,
                let roots = legacy.stringArray(forKey: "searchRoots") {
                 current.set(roots, forKey: "searchRoots")
@@ -337,7 +379,7 @@ final class AppModel: ObservableObject {
                 current.set(date, forKey: "lastSuccessfulScanDate")
             }
         }
-        current.set(true, forKey: "siftMigratedDevSweepDefaults")
+        current.set(true, forKey: marker)
     }
 
     private static func defaultSearchRoots() -> [URL] {

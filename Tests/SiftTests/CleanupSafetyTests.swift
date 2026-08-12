@@ -133,6 +133,33 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertFalse(UpdateService.isAllowedDownloadURL(try XCTUnwrap(URL(string: "http://github.com/owner/sift/releases/download/v1/Sift-1.zip"))))
     }
 
+    func testUpdaterAllowsOnlyTheDevSweepToSiftIdentityMigration() {
+        XCTAssertTrue(UpdateService.isSupportedCurrentApplicationName("Sift.app"))
+        XCTAssertTrue(UpdateService.isSupportedCurrentApplicationName("DevSweep.app"))
+        XCTAssertFalse(UpdateService.isSupportedCurrentApplicationName("Other.app"))
+
+        XCTAssertTrue(UpdateService.isAllowedBundleTransition(
+            from: "com.dominikbura.sift",
+            to: "com.dominikbura.sift"
+        ))
+        XCTAssertTrue(UpdateService.isAllowedBundleTransition(
+            from: "com.dominikhait.devsweep",
+            to: "com.dominikbura.sift"
+        ))
+        XCTAssertTrue(UpdateService.isAllowedBundleTransition(
+            from: "com.dominikhait.sift",
+            to: "com.dominikbura.sift"
+        ))
+        XCTAssertFalse(UpdateService.isAllowedBundleTransition(
+            from: "com.dominikbura.sift",
+            to: "com.example.untrusted"
+        ))
+        XCTAssertFalse(UpdateService.isAllowedBundleTransition(
+            from: "com.dominikbura.sift",
+            to: "com.dominikhait.devsweep"
+        ))
+    }
+
     func testDockerConnectionErrorsArePresentedWithoutSocketDetails() {
         let rawError = "failed to connect to the docker API at unix:///Users/person/.orbstack/run/docker.sock; check if the daemon is running"
 
