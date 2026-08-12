@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var showDockerConfirmation = false
     @State private var showRoots = false
     @State private var expandedWorkspaceIDs = Set<String>()
+    @State private var collapsedRepositoryIDs = Set<String>()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -240,22 +241,36 @@ struct ContentView: View {
     }
 
     private func repositorySection(_ repository: RepositoryGroup) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 9) {
-                Image(systemName: "folder").font(.title3).foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(repository.name).font(.headline).lineLimit(1)
-                    Text("\(repository.workspaces.count) worktree\(repository.workspaces.count == 1 ? "" : "s")")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(ByteFormatting.string(repository.reclaimableBytes))
-                    .font(.callout.weight(.medium).monospacedDigit()).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 4)
+        let isCollapsed = collapsedRepositoryIDs.contains(repository.id)
 
-            ForEach(repository.workspaces) { workspace in workspaceCard(workspace) }
+        return VStack(alignment: .leading, spacing: 8) {
+            Button {
+                if isCollapsed { collapsedRepositoryIDs.remove(repository.id) }
+                else { collapsedRepositoryIDs.insert(repository.id) }
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "folder").font(.title3).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(repository.name).font(.headline).lineLimit(1)
+                        Text("\(repository.workspaces.count) worktree\(repository.workspaces.count == 1 ? "" : "s")")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(ByteFormatting.string(repository.reclaimableBytes))
+                        .font(.callout.weight(.medium).monospacedDigit()).foregroundStyle(.secondary)
+                    Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 4).padding(.vertical, 3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if !isCollapsed {
+                ForEach(repository.workspaces) { workspace in workspaceCard(workspace) }
+            }
         }
+        .animation(.easeInOut(duration: 0.16), value: isCollapsed)
     }
 
     private func workspaceCard(_ workspace: Workspace) -> some View {
