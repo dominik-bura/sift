@@ -16,6 +16,7 @@ final class AppModel: ObservableObject {
     @Published var lastScanDuration: TimeInterval?
     @Published var isCleaning = false
     @Published private(set) var cleaningGlobalCacheID: String?
+    @Published private(set) var isCleaningDocker = false
     @Published var lastMessage: String?
     @Published var lastSyncedAt: Date?
     @Published var searchRoots: [URL]
@@ -65,6 +66,15 @@ final class AppModel: ObservableObject {
     var candidates: [CleanupCandidate] { workspaces.flatMap(\.candidates) }
     var selectedCandidates: [CleanupCandidate] { candidates.filter { selectedCandidateIDs.contains($0.id) } }
     var selectedBytes: Int64 { selectedCandidates.reduce(0) { $0 + $1.allocatedBytes } }
+    var cleanableGlobalCaches: [GlobalCache] {
+        globalCaches.filter { cache in
+            if case let .available(bytes, _) = cache.state { return bytes > 0 }
+            return false
+        }
+    }
+    var cleanableGlobalStorageCount: Int {
+        cleanableGlobalCaches.count + (dockerState.reclaimableBytes > 0 ? 1 : 0)
+    }
     var applicationName: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Sift"
     }
@@ -246,6 +256,7 @@ final class AppModel: ObservableObject {
     func pruneDockerImages() {
         guard !isCleaning else { return }
         isCleaning = true
+        isCleaningDocker = true
         let docker = docker
         let before = Self.diskSpaceSnapshot().available
         Task {
@@ -262,6 +273,7 @@ final class AppModel: ObservableObject {
                 lastMessage = "Docker cleanup failed: \(error.localizedDescription)"
             }
             isCleaning = false
+            isCleaningDocker = false
             scan(preservingMessage: true)
         }
     }
@@ -301,6 +313,71 @@ final class AppModel: ObservableObject {
                 }
             }
             cleaningGlobalCacheID = nil
+            isCleaning = false
+        }
+    }
+
+    func cleanAllGlobalCaches() {
+        let caches = cleanableGlobalCaches
+        let cleansDocker = dockerState.reclaimableBytes > 0
+        guard (!caches.isEmpty || cleansDocker), !isCleaning else { return }
+        isCleaning = true
+        lastMessage = "Cleaning Docker and global caches…"
+        let service = globalCacheService
+        let docker = docker
+        let before = Self.diskSpaceSnapshot().available
+
+        Task {
+            var succeeded = 0
+            var failed = 0
+            var estimateDrop: Int64 = 0
+
+            if cleansDocker {
+                isCleaningDocker = true
+                let previousDockerBytes = dockerState.reclaimableBytes
+                do {
+                    _ = try await Task.detached(priority: .userInitiated) { try docker.pruneUnusedData() }.value
+                    let refreshedDocker = await Task.detached(priority: .utility) { docker.status() }.value
+                    dockerState = refreshedDocker
+                    estimateDrop += max(0, previousDockerBytes - refreshedDocker.reclaimableBytes)
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    dockerState = await Task.detached(priority: .utility) { docker.status() }.value
+                }
+                isCleaningDocker = false
+            }
+
+            for cache in caches {
+                cleaningGlobalCacheID = cache.id
+                replaceGlobalCache(cache, state: .checking)
+                do {
+                    try await Task.detached(priority: .userInitiated) { try service.clean(id: cache.id) }.value
+                    let refreshed = await Task.detached(priority: .utility) { service.inspect(id: cache.id) }.value
+                    if let refreshed {
+                        replaceGlobalCache(refreshed)
+                        estimateDrop += max(0, cache.bytes - refreshed.bytes)
+                    }
+                    succeeded += 1
+                } catch {
+                    failed += 1
+                    if let refreshed = await Task.detached(priority: .utility, operation: { service.inspect(id: cache.id) }).value {
+                        replaceGlobalCache(refreshed)
+                    } else {
+                        replaceGlobalCache(cache, state: .failed(error.localizedDescription))
+                    }
+                }
+            }
+
+            cleaningGlobalCacheID = nil
+            try? await Task.sleep(for: .milliseconds(300))
+            refreshDiskSpace()
+            let freeSpaceIncrease = max(0, (availableDiskBytes ?? before ?? 0) - (before ?? availableDiskBytes ?? 0))
+            let failureText = failed > 0 ? "; \(failed) failed" : ""
+            let diskText = freeSpaceIncrease > 0
+                ? "macOS free space increased by \(ByteFormatting.string(freeSpaceIncrease))"
+                : "macOS reported no immediate free-space change"
+            lastMessage = "Cleaned \(succeeded) item\(succeeded == 1 ? "" : "s")\(failureText) · estimate dropped by \(ByteFormatting.string(estimateDrop)); \(diskText)."
             isCleaning = false
         }
     }

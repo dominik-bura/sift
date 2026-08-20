@@ -13,7 +13,8 @@ struct SecureCommandRunner: Sendable {
         _ executable: URL,
         arguments: [String],
         timeout: TimeInterval = 30,
-        currentDirectory: URL? = nil
+        currentDirectory: URL? = nil,
+        environmentOverrides: [String: String] = [:]
     ) -> CommandResult {
         let process = Process()
         let outputPipe = Pipe()
@@ -35,6 +36,11 @@ struct SecureCommandRunner: Sendable {
         }
         environment["PATH"] = trustedPathDirectories.joined(separator: ":")
         environment["NO_COLOR"] = "1"
+        // Keep the environment surface narrow. Callers cannot override PATH,
+        // HOME, Docker routing, or other process-sensitive configuration.
+        for key in ["UV_LOCK_TIMEOUT"] {
+            if let value = environmentOverrides[key] { environment[key] = value }
+        }
         process.environment = environment
 
         let output = LockedData()

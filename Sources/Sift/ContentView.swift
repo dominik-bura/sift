@@ -16,7 +16,6 @@ struct ContentView: View {
                         if isInitialScan {
                             loadingState
                         } else {
-                            dockerCard
                             globalCachesSection
                             worktreesSection
                         }
@@ -72,6 +71,7 @@ struct ContentView: View {
                         switch kind {
                         case .docker: model.pruneDockerImages()
                         case .folders: model.cleanSelected()
+                        case .allGlobals: model.cleanAllGlobalCaches()
                         case let .global(id):
                             if let cache = model.globalCaches.first(where: { $0.id == id }) { model.cleanGlobalCache(cache) }
                         case let .update(release): model.installUpdate(release)
@@ -203,52 +203,24 @@ struct ContentView: View {
         .accessibilityLabel("Scanning worktrees and generated folders")
     }
 
-    private var dockerCard: some View {
-        Panel {
-            HStack(spacing: 13) {
-                Image(systemName: "shippingbox.fill").font(.title2).foregroundStyle(.blue).frame(width: 30)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Docker storage").font(.headline)
-                    switch model.dockerState {
-                    case .checking: Text("Checking Docker…").foregroundStyle(.secondary)
-                    case let .unavailable(message): Text(message).foregroundStyle(.secondary)
-                    case let .available(bytes, detail):
-                        Text(bytes > 0 ? "\(detail) · \(ByteFormatting.string(bytes)) reclaimable" : detail).foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer()
-                switch model.dockerState {
-                case .checking:
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(SiftTheme.accent)
-                        .accessibilityLabel("Checking Docker")
-                case let .available(bytes, _) where bytes > 0:
-                    Button("Clean") { confirmation = .docker }.disabled(model.isCleaning)
-                default:
-                    EmptyView()
-                }
-            }
-        }
-        .padding(.bottom, 20)
-    }
-
     private var globalCachesSection: some View {
-        Group {
-            if !model.globalCaches.isEmpty {
-                VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 9) {
                     HStack {
                         Text("GLOBAL CACHES").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                         Spacer()
-                        Text("Permanent cleanup").font(.caption2).foregroundStyle(.tertiary)
+                        Button("Clean all") { confirmation = .allGlobals }
+                            .buttonStyle(.plain)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(model.cleanableGlobalStorageCount == 0 ? Color.secondary : SiftTheme.accent)
+                            .disabled(model.cleanableGlobalStorageCount == 0 || model.isCleaning)
                     }
                     Panel(padding: 0) {
                         VStack(spacing: 0) {
+                            dockerCacheRow
                             ForEach(Array(model.globalCaches.enumerated()), id: \.element.id) { index, cache in
-                                if index > 0 { Divider().padding(.leading, 52) }
+                                Divider().padding(.leading, 52)
                                 HStack(spacing: 11) {
-                                    Image(systemName: cache.symbolName).foregroundStyle(.orange).frame(width: 25)
+                                    Image(systemName: cache.symbolName).foregroundStyle(SiftTheme.accent).frame(width: 25)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(cache.name).font(.callout.weight(.semibold))
                                         if case let .available(_, path) = cache.state {
@@ -283,8 +255,37 @@ struct ContentView: View {
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
                 .padding(.bottom, 20)
+    }
+
+    private var dockerCacheRow: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "shippingbox.fill").foregroundStyle(SiftTheme.accent).frame(width: 25)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Docker storage").font(.callout.weight(.semibold))
+                switch model.dockerState {
+                case .checking:
+                    EmptyView()
+                case let .unavailable(message):
+                    Text(message).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                case let .available(_, detail):
+                    Text(detail).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 6)
+            if model.isCleaningDocker || model.dockerState == .checking {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(SiftTheme.accent)
+                    .accessibilityLabel(model.isCleaningDocker ? "Cleaning Docker storage" : "Measuring Docker storage")
+            } else if case let .available(bytes, _) = model.dockerState, bytes > 0 {
+                Text("up to \(ByteFormatting.string(bytes))")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Button("Clean") { confirmation = .docker }.disabled(model.isCleaning)
+            } else if case .available = model.dockerState {
+                Text("Empty").font(.caption).foregroundStyle(.tertiary)
             }
         }
+        .padding(.horizontal, 13).padding(.vertical, 10)
     }
 
     private var worktreesSection: some View {
@@ -513,6 +514,20 @@ struct ContentView: View {
                 }
                 .scrollIndicators(.hidden)
                 .frame(maxHeight: 390)
+
+                Divider()
+
+                HStack {
+                    Spacer()
+                    Button { NSApplication.shared.terminate(nil) } label: {
+                        Label("Quit \(model.applicationName)", systemImage: "power")
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
             }
             .frame(width: 390)
             .siftGlassSurface(cornerRadius: 18, interactive: false)
@@ -531,7 +546,7 @@ struct ContentView: View {
                 Text("Updates").font(.caption.weight(.medium))
                 switch model.updateState {
                 case .unavailable:
-                    Text("Update available")
+                    Text("Updates unavailable in this build")
                 case .idle:
                     Text("Ready to check for updates")
                 case .checking:
@@ -585,16 +600,27 @@ struct ContentView: View {
                 Button { showSettings = true } label: {
                     Image(systemName: "gearshape.fill")
                         .frame(width: 22, height: 22)
+                        .overlay(alignment: .topTrailing) {
+                            if case .available = model.updateState {
+                                Circle()
+                                    .fill(SiftTheme.accent)
+                                    .frame(width: 7, height: 7)
+                                    .overlay { Circle().stroke(.black.opacity(0.45), lineWidth: 1) }
+                                    .offset(x: 2, y: -1)
+                                    .accessibilityHidden(true)
+                            }
+                        }
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).foregroundStyle(.secondary).help("Settings")
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help(updateAvailable ? "Settings · Update available" : "Settings")
+                .accessibilityLabel(updateAvailable ? "Settings, update available" : "Settings")
                 HStack(spacing: 5) {
                     Image(systemName: "internaldrive").frame(width: 22, height: 22)
                     Text(freeSpaceText)
                 }
                 .font(.caption.weight(.medium)).foregroundStyle(.secondary)
                 Spacer()
-                Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
                 Button { confirmation = .folders } label: {
                     if isInitialScan {
                         HStack { ProgressView().controlSize(.small); Text("Scanning…") }.frame(minWidth: 170)
@@ -614,6 +640,11 @@ struct ContentView: View {
     }
 
     private var isInitialScan: Bool { model.isScanning && model.workspaces.isEmpty }
+
+    private var updateAvailable: Bool {
+        if case .available = model.updateState { return true }
+        return false
+    }
 
     private var storageFreeFraction: Double {
         guard let free = model.freeDiskSpace(), let capacity = model.diskCapacity(), capacity > 0 else { return 0 }
@@ -637,6 +668,7 @@ struct ContentView: View {
 private enum CleanupConfirmation: Equatable {
     case folders
     case docker
+    case allGlobals
     case global(String)
     case update(UpdateRelease)
 
@@ -649,6 +681,7 @@ private enum CleanupConfirmation: Equatable {
         switch self {
         case .folders: return "trash.fill"
         case .docker: return "shippingbox.fill"
+        case .allGlobals: return "externaldrive.badge.xmark"
         case .global: return "externaldrive.badge.xmark"
         case .update: return "arrow.down.app.fill"
         }
@@ -660,7 +693,12 @@ private enum CleanupConfirmation: Equatable {
             return "Only the selected generated folders will move to macOS Trash. Project files and workspace roots are excluded."
         case .docker:
             return "Pruning is permanent and uses only the local Docker Engine. Unused images and build cache are removed; active images, containers, and volumes remain untouched."
-        case .global:
+        case .allGlobals:
+            return "Docker unused images and build cache plus each installed package-manager cache will be cleaned sequentially. Active Docker images, containers, and volumes remain untouched. Active uv processes can prevent uv cleanup; Sift never bypasses uv's cache lock."
+        case let .global(id):
+            if id == "uv" {
+                return "uv requires all active uv commands to stop before its cache can be cleared safely. Cached artifacts will be downloaded or rebuilt later; Sift never bypasses uv's cache lock."
+            }
             return "This package manager performs permanent cache cleanup. Cached artifacts may need to be downloaded or rebuilt later; installed tools and project files remain untouched."
         case .update:
             return "Sift will download the update, verify its checksum, identity, version, and code signature, then replace and relaunch this app."
@@ -671,6 +709,7 @@ private enum CleanupConfirmation: Equatable {
         switch self {
         case .folders: return "Move selected folders to Trash?"
         case .docker: return "Remove unused Docker data?"
+        case .allGlobals: return "Clean Docker and all global caches?"
         case let .global(id):
             let cache = model.globalCaches.first(where: { $0.id == id })
             return "\(cache?.onlyPrunesUnusedData == true ? "Prune" : "Clean") \(cache?.name ?? "global cache")?"
@@ -682,6 +721,7 @@ private enum CleanupConfirmation: Equatable {
         switch self {
         case .folders: return "Move \(model.selectedCandidates.count) folders · \(ByteFormatting.string(model.selectedBytes)) to Trash"
         case .docker: return "Prune images and build cache"
+        case .allGlobals: return "Clean \(model.cleanableGlobalStorageCount) items"
         case let .global(id):
             return model.globalCaches.first(where: { $0.id == id })?.onlyPrunesUnusedData == true
                 ? "Prune unused cache data"

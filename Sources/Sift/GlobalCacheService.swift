@@ -68,7 +68,12 @@ struct GlobalCacheService: Sendable {
                 timeout: 120
             )
         } else {
-            result = runner.run(executable, arguments: definition.cleanArguments, timeout: definition.id == "homebrew" ? 300 : 120)
+            result = runner.run(
+                executable,
+                arguments: definition.cleanArguments,
+                timeout: definition.id == "homebrew" ? 300 : 120,
+                environmentOverrides: definition.id == "uv" ? ["UV_LOCK_TIMEOUT": "0"] : [:]
+            )
         }
         guard result.exitCode == 0 else {
             throw GlobalCacheError.failed(Self.safeError(result.error))
@@ -170,6 +175,9 @@ struct GlobalCacheService: Sendable {
         let normalized = raw.lowercased()
         if normalized.contains("timed out") { return "Cleanup timed out" }
         if normalized.contains("permission denied") { return "Permission denied" }
+        if normalized.contains("lock") && (normalized.contains("cache") || normalized.contains("resource temporarily unavailable")) {
+            return "Cache is in use by another uv process"
+        }
         return "Cleanup command failed"
     }
 }
