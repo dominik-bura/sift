@@ -101,9 +101,8 @@ struct WorkspaceScanner: Sendable {
         let root = workspaceURL.standardizedFileURL
         let git = gitMetadata(at: root)
         var candidates: [CleanupCandidate] = []
-        var reusedSizeCount = 0
+        let reusedSizeCount = 0
         var measuredSizeCount = 0
-        let previousByPath = Dictionary(uniqueKeysWithValues: (previous?.candidates ?? []).map { ($0.url.path, $0) })
         let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .nameKey]
 
         if let enumerator = fileManager.enumerator(
@@ -129,17 +128,11 @@ struct WorkspaceScanner: Sendable {
 
                 if let kind = CleanupKind.byDirectoryName[name] {
                     let modificationDate = try? item.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-                    let previousCandidate = previousByPath[item.standardizedFileURL.path]
-                    let canReuse = previousCandidate?.modificationDate != nil
-                        && previousCandidate?.modificationDate == modificationDate
-                    let size: Int64
-                    if canReuse, let previousCandidate {
-                        size = previousCandidate.allocatedBytes
-                        reusedSizeCount += 1
-                    } else {
-                        size = allocatedSize(of: item)
-                        measuredSizeCount += 1
-                    }
+                    // A directory's modification date does not change when an existing
+                    // descendant grows. Always measure the current contents so displayed
+                    // reclaimable space cannot silently reuse a stale value.
+                    let size = allocatedSize(of: item)
+                    measuredSizeCount += 1
                     candidates.append(
                         CleanupCandidate(
                             url: item.standardizedFileURL,
@@ -211,7 +204,12 @@ struct WorkspaceScanner: Sendable {
     }
 
     private func allocatedSize(of directory: URL) -> Int64 {
-        let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileAllocatedSizeKey, .totalFileAllocatedSizeKey]
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .fileAllocatedSizeKey,
+            .totalFileAllocatedSizeKey,
+            .mayShareFileContentKey
+        ]
         guard let enumerator = fileManager.enumerator(
             at: directory,
             includingPropertiesForKeys: Array(keys),
@@ -222,6 +220,9 @@ struct WorkspaceScanner: Sendable {
         var total: Int64 = 0
         while let file = enumerator.nextObject() as? URL {
             guard let values = try? file.resourceValues(forKeys: keys), values.isRegularFile == true else { continue }
+            // APFS reports a clone's full allocated size even though deleting it may not free
+            // the shared blocks. Count only blocks Foundation identifies as non-shared.
+            guard values.mayShareFileContent != true else { continue }
             total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
         }
         return total

@@ -15,10 +15,14 @@ final class AppModel: ObservableObject {
     @Published var measuredCandidateSizeCount = 0
     @Published var lastScanDuration: TimeInterval?
     @Published var isCleaning = false
+    @Published private(set) var cleaningGlobalCacheID: String?
     @Published var lastMessage: String?
     @Published var lastSyncedAt: Date?
     @Published var searchRoots: [URL]
     @Published var updateState: UpdateState = .idle
+    @Published private(set) var availableDiskBytes: Int64?
+    @Published private(set) var totalDiskBytes: Int64?
+    @Published private(set) var lastTrashedURLs: [URL] = []
 
     private let scanner = WorkspaceScanner()
     private let cleaner = CleanupService()
@@ -43,6 +47,7 @@ final class AppModel: ObservableObject {
         workspaces = scanCache.load(under: searchRoots)
         globalCaches = globalCacheService.installedPlaceholders()
         lastSyncedAt = UserDefaults.standard.object(forKey: lastSyncedKey) as? Date
+        refreshDiskSpace()
         if updateService.repository == nil {
             updateState = .unavailable
         } else {
@@ -73,7 +78,7 @@ final class AppModel: ObservableObject {
     var totalReclaimableBytes: Int64 {
         workspaces.reduce(0) { $0 + $1.reclaimableBytes }
             + dockerState.reclaimableBytes
-            + globalCaches.reduce(0) { $0 + $1.bytes }
+            + globalCaches.reduce(0) { $0 + $1.reclaimableBytes }
     }
     var repositoryGroups: [RepositoryGroup] {
         Dictionary(grouping: workspaces, by: \.repositoryID)
@@ -90,15 +95,15 @@ final class AppModel: ObservableObject {
             }
     }
 
-    func scan(inBackground: Bool = false) {
-        guard !isScanning else { return }
+    func scan(inBackground: Bool = false, preservingMessage: Bool = false) {
+        guard !isScanning, !isCleaning else { return }
         isScanning = true
         isBackgroundRefreshing = inBackground
         scannedWorkspaceCount = 0
         discoveredWorkspaceCount = 0
         reusedCandidateSizeCount = 0
         measuredCandidateSizeCount = 0
-        lastMessage = nil
+        if !preservingMessage { lastMessage = nil }
         let scanStartedAt = ContinuousClock.now
         let roots = searchRoots
         let scanner = scanner
@@ -108,14 +113,8 @@ final class AppModel: ObservableObject {
         Task {
             if !inBackground { dockerState = .checking }
 
-            Task {
-                let newDockerState = await Task.detached(priority: .utility) { docker.status() }.value
-                dockerState = newDockerState
-            }
-            Task {
-                let caches = await Task.detached(priority: .utility) { globalCacheService.inspectAll() }.value
-                globalCaches = caches.sorted { $0.bytes > $1.bytes }
-            }
+            async let refreshedDockerState: DockerState = Task.detached(priority: .utility) { docker.status() }.value
+            async let refreshedGlobalCaches: [GlobalCache] = Task.detached(priority: .utility) { globalCacheService.inspectAll() }.value
 
             let knownRoots = roots.filter(scanner.usesShallowDiscovery)
             let generalRoots = roots.filter { !scanner.usesShallowDiscovery(for: $0) }
@@ -151,6 +150,8 @@ final class AppModel: ObservableObject {
             workspaces = refreshed
             selectedCandidateIDs.formIntersection(refreshed.flatMap(\.candidates).map(\.id))
             scanCache.save(refreshed)
+            dockerState = await refreshedDockerState
+            globalCaches = await refreshedGlobalCaches.sorted { $0.bytes > $1.bytes }
             let completedAt = Date()
             lastSyncedAt = completedAt
             UserDefaults.standard.set(completedAt, forKey: lastSyncedKey)
@@ -162,7 +163,7 @@ final class AppModel: ObservableObject {
     }
 
     func scanIfStale(now: Date = Date(), maximumAge: TimeInterval = 60) {
-        guard !isScanning else { return }
+        guard !isScanning, !isCleaning else { return }
         guard !workspaces.isEmpty, let lastSyncedAt else {
             scan()
             return
@@ -222,12 +223,23 @@ final class AppModel: ObservableObject {
                 cleaner.remove(selected, from: currentWorkspaces)
             }.value
             isCleaning = false
+            lastTrashedURLs = result.trashedURLs
+            let containsHiddenFolders = result.trashedURLs.contains { $0.lastPathComponent.hasPrefix(".") }
             if result.failed.isEmpty {
-                lastMessage = "Moved \(result.trashed.count) folder\(result.trashed.count == 1 ? "" : "s") · \(ByteFormatting.string(result.reclaimedBytes)) to Trash."
+                let hiddenHint = containsHiddenFolders ? " Finder hides dot-folders; in Trash press ⇧⌘. to show them." : ""
+                lastMessage = "Moved \(result.trashed.count) folder\(result.trashed.count == 1 ? "" : "s") to Trash · up to \(ByteFormatting.string(result.reclaimedBytes)) pending.\(hiddenHint)"
             } else {
                 lastMessage = "Moved \(result.trashed.count) folders to Trash; \(result.failed.count) could not be moved."
             }
-            scan()
+            scan(preservingMessage: true)
+        }
+    }
+
+    func showLastTrashedItems() {
+        guard !lastTrashedURLs.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(lastTrashedURLs)
+        if lastTrashedURLs.contains(where: { $0.lastPathComponent.hasPrefix(".") }) {
+            lastMessage = "Finder hides dot-prefixed folders. In the Trash window, press ⇧⌘. to show them."
         }
     }
 
@@ -235,32 +247,77 @@ final class AppModel: ObservableObject {
         guard !isCleaning else { return }
         isCleaning = true
         let docker = docker
+        let before = Self.diskSpaceSnapshot().available
         Task {
             do {
-                _ = try await Task.detached(priority: .userInitiated) { try docker.pruneUnusedImages() }.value
-                lastMessage = "Unused Docker images were removed. Containers and volumes were preserved."
+                let output = try await Task.detached(priority: .userInitiated) { try docker.pruneUnusedData() }.value
+                refreshDiskSpace()
+                let hostFreed = max(0, (availableDiskBytes ?? before ?? 0) - (before ?? availableDiskBytes ?? 0))
+                let dockerFreed = DockerService.reclaimedBytes(fromPruneOutput: output)
+                let dockerReport = dockerFreed.map { "Docker reports \(ByteFormatting.string($0)) reclaimed" } ?? "Docker cleanup completed"
+                lastMessage = hostFreed > 0
+                    ? "\(dockerReport) · macOS free space increased by \(ByteFormatting.string(hostFreed))."
+                    : "\(dockerReport); Docker's VM disk may release macOS space later."
             } catch {
                 lastMessage = "Docker cleanup failed: \(error.localizedDescription)"
             }
             isCleaning = false
-            scan()
+            scan(preservingMessage: true)
         }
     }
 
     func cleanGlobalCache(_ cache: GlobalCache) {
         guard !isCleaning else { return }
         isCleaning = true
+        cleaningGlobalCacheID = cache.id
+        lastMessage = "Cleaning \(cache.name)…"
+        replaceGlobalCache(cache, state: .checking)
         let service = globalCacheService
+        let before = Self.diskSpaceSnapshot().available
         Task {
             do {
                 try await Task.detached(priority: .userInitiated) { try service.clean(id: cache.id) }.value
-                lastMessage = "\(cache.name) cleaned. It will be rebuilt or downloaded when needed."
+                let refreshed = await Task.detached(priority: .utility) { service.inspect(id: cache.id) }.value
+                if let refreshed { replaceGlobalCache(refreshed) }
+                let remainingBytes = refreshed?.bytes ?? 0
+                let removedFromCache = max(0, cache.bytes - remainingBytes)
+                try? await Task.sleep(for: .milliseconds(300))
+                refreshDiskSpace()
+                let actuallyFreed = max(0, (availableDiskBytes ?? before ?? 0) - (before ?? availableDiskBytes ?? 0))
+                if removedFromCache > 0 {
+                    let verb = cache.onlyPrunesUnusedData ? "pruned" : "cleaned"
+                    lastMessage = actuallyFreed > 0
+                        ? "\(cache.name) \(verb) · estimate dropped by \(ByteFormatting.string(removedFromCache)); macOS free space increased by \(ByteFormatting.string(actuallyFreed))."
+                        : "\(cache.name) \(verb) · estimate dropped by \(ByteFormatting.string(removedFromCache)); macOS reported no immediate free-space change."
+                } else {
+                    lastMessage = "\(cache.name) cleanup completed; no additional cache data was removed."
+                }
             } catch {
                 lastMessage = "\(cache.name) cleanup failed: \(error.localizedDescription)"
+                if let refreshed = await Task.detached(priority: .utility, operation: { service.inspect(id: cache.id) }).value {
+                    replaceGlobalCache(refreshed)
+                } else {
+                    replaceGlobalCache(cache, state: .failed(error.localizedDescription))
+                }
             }
+            cleaningGlobalCacheID = nil
             isCleaning = false
-            scan()
         }
+    }
+
+    private func replaceGlobalCache(_ cache: GlobalCache) {
+        guard let index = globalCaches.firstIndex(where: { $0.id == cache.id }) else { return }
+        globalCaches[index] = cache
+    }
+
+    private func replaceGlobalCache(_ cache: GlobalCache, state: GlobalCache.State) {
+        replaceGlobalCache(GlobalCache(
+            id: cache.id,
+            name: cache.name,
+            detail: cache.detail,
+            symbolName: cache.symbolName,
+            state: state
+        ))
     }
 
     func checkForUpdates() async {
@@ -350,13 +407,27 @@ final class AppModel: ObservableObject {
     }
 
     func freeDiskSpace() -> Int64? {
-        let values = try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return values?.volumeAvailableCapacityForImportantUsage
+        availableDiskBytes
     }
 
     func diskCapacity() -> Int64? {
-        let values = try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeTotalCapacityKey])
-        return values?.volumeTotalCapacity.map(Int64.init)
+        totalDiskBytes
+    }
+
+    func refreshDiskSpace() {
+        let values = Self.diskSpaceSnapshot()
+        availableDiskBytes = values.available
+        totalDiskBytes = values.total
+    }
+
+    private static func diskSpaceSnapshot() -> (available: Int64?, total: Int64?) {
+        let values = try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(
+            forKeys: [.volumeAvailableCapacityKey, .volumeTotalCapacityKey]
+        )
+        return (
+            values?.volumeAvailableCapacity.map(Int64.init),
+            values?.volumeTotalCapacity.map(Int64.init)
+        )
     }
 
     private func saveRoots() {

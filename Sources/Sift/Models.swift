@@ -114,10 +114,19 @@ struct GlobalCache: Identifiable, Equatable, Sendable {
         if case let .available(bytes, _) = state { return bytes }
         return 0
     }
+
+    var onlyPrunesUnusedData: Bool {
+        id == "pnpm" || id == "homebrew"
+    }
+
+    var reclaimableBytes: Int64 {
+        onlyPrunesUnusedData ? 0 : bytes
+    }
 }
 
 struct CleanupResult: Sendable {
     let trashed: [CleanupCandidate]
+    let trashedURLs: [URL]
     let failed: [(CleanupCandidate, String)]
 
     var reclaimedBytes: Int64 {

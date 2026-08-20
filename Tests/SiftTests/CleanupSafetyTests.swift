@@ -46,6 +46,7 @@ final class CleanupSafetyTests: XCTestCase {
         let result = CleanupService(trashService: TestTrashService(destination: trashURL)).remove([candidate], from: [workspace])
 
         XCTAssertEqual(result.trashed, [candidate])
+        XCTAssertEqual(result.trashedURLs.map(\.standardizedFileURL.path), [trashURL.appendingPathComponent(".next").standardizedFileURL.path])
         XCTAssertFalse(FileManager.default.fileExists(atPath: candidateURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: trashURL.appendingPathComponent(".next").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: workspaceURL.path))
@@ -105,9 +106,42 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(DockerService.parseHumanSize("512MB (40%)"), 512_000_000)
     }
 
+    func testDockerPruneOutputSumsImageAndBuildCacheReclaims() {
+        let output = """
+        Total reclaimed space: 1.5GB
+        Total reclaimed space: 250MB
+        """
+        XCTAssertEqual(DockerService.reclaimedBytes(fromPruneOutput: output), 1_750_000_000)
+    }
+
+    func testPartialGlobalCachesDoNotClaimTheirWholeSizeIsReclaimable() {
+        let partial = GlobalCache(
+            id: "pnpm", name: "pnpm store", detail: "", symbolName: "shippingbox.fill",
+            state: .available(bytes: 5_000_000_000, path: "/tmp/pnpm")
+        )
+        let full = GlobalCache(
+            id: "bun", name: "Bun cache", detail: "", symbolName: "hare.fill",
+            state: .available(bytes: 5_000_000_000, path: "/tmp/bun")
+        )
+        XCTAssertEqual(partial.reclaimableBytes, 0)
+        XCTAssertEqual(full.reclaimableBytes, 5_000_000_000)
+    }
+
     func testDockerSizeFormattingDoesNotRequirePercentage() {
         XCTAssertEqual(DockerService.parseHumanSize("0B (0%)"), 0)
         XCTAssertEqual(DockerService.parseHumanSize("15.89GB (67%)"), 15_890_000_000)
+    }
+
+    func testDockerUsageIncludesImagesAndReclaimableBuildCache() {
+        let usage = DockerService.parseSystemDF("""
+        Images|6|4.917GB|0B (0%)
+        Containers|6|122.9kB|122.9kB (100%)
+        Local Volumes|2|11.72kB|0B (0%)
+        Build Cache|32|4.267GB|2.825GB
+        """)
+        XCTAssertEqual(usage.imageCount, 6)
+        XCTAssertEqual(usage.imageBytes, 4_917_000_000)
+        XCTAssertEqual(usage.reclaimableBytes, 2_825_000_000)
     }
 
     func testDockerOnlyAllowsLocalUnixSocketEndpoints() {
@@ -229,7 +263,7 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertEqual(restored[0].candidates, [existing])
     }
 
-    func testWarmWorkspaceScanReusesUnchangedCandidateSize() throws {
+    func testWarmWorkspaceScanRemeasuresCandidateSize() throws {
         let workspaceURL = temporaryRoot.appendingPathComponent("warm-project", isDirectory: true)
         try createGitWorkspace(at: workspaceURL)
         let candidateURL = workspaceURL.appendingPathComponent("node_modules/pkg", isDirectory: true)
@@ -242,8 +276,8 @@ final class CleanupSafetyTests: XCTestCase {
 
         XCTAssertEqual(cold.measuredSizeCount, 1)
         XCTAssertEqual(cold.reusedSizeCount, 0)
-        XCTAssertEqual(warm.measuredSizeCount, 0)
-        XCTAssertEqual(warm.reusedSizeCount, 1)
+        XCTAssertEqual(warm.measuredSizeCount, 1)
+        XCTAssertEqual(warm.reusedSizeCount, 0)
         XCTAssertEqual(warm.workspace.reclaimableBytes, cold.workspace.reclaimableBytes)
     }
 
@@ -267,8 +301,10 @@ final class CleanupSafetyTests: XCTestCase {
 private struct TestTrashService: TrashServing {
     let destination: URL
 
-    func trashItem(at url: URL) throws {
+    func trashItem(at url: URL) throws -> URL {
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-        try FileManager.default.moveItem(at: url, to: destination.appendingPathComponent(url.lastPathComponent))
+        let result = destination.appendingPathComponent(url.lastPathComponent)
+        try FileManager.default.moveItem(at: url, to: result)
+        return result
     }
 }

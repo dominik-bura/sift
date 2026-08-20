@@ -18,17 +18,22 @@ struct GlobalCacheService: Sendable {
     private var definitions: [Definition] {
         let home = NSHomeDirectory()
         return [
-            Definition(id: "uv", name: "uv cache", detail: "Prunes unused packages and disposable environments", symbol: "bolt.fill", executable: "uv", fixedPath: { _ in nil }, pathArguments: ["cache", "dir"], cleanArguments: ["cache", "prune"]),
+            Definition(id: "uv", name: "uv cache", detail: "Clears downloaded packages and disposable cache data", symbol: "bolt.fill", executable: "uv", fixedPath: { _ in nil }, pathArguments: ["cache", "dir"], cleanArguments: ["cache", "clean"]),
             Definition(id: "pnpm", name: "pnpm store", detail: "Prunes packages unreferenced by local projects", symbol: "shippingbox.fill", executable: "pnpm", fixedPath: { _ in nil }, pathArguments: ["store", "path"], cleanArguments: ["store", "prune"]),
             Definition(id: "bun", name: "Bun cache", detail: "Clears downloaded package archives", symbol: "hare.fill", executable: "bun", fixedPath: { _ in "\(home)/.bun/install/cache" }, pathArguments: nil, cleanArguments: ["pm", "cache", "rm"]),
             Definition(id: "yarn", name: "Yarn cache", detail: "Clears the shared package archive cache", symbol: "shippingbox.circle.fill", executable: "yarn", fixedPath: { _ in nil }, pathArguments: ["cache", "dir"], cleanArguments: ["cache", "clean"]),
             Definition(id: "npm", name: "npm cache", detail: "Clears npm's self-healing content cache", symbol: "cube.fill", executable: "npm", fixedPath: { _ in nil }, pathArguments: ["config", "get", "cache"], cleanArguments: ["cache", "clean", "--force"]),
-            Definition(id: "go", name: "Go build cache", detail: "Clears reproducible build and test results", symbol: "hammer.fill", executable: "go", fixedPath: { _ in nil }, pathArguments: ["env", "GOCACHE"], cleanArguments: ["clean", "-cache", "-testcache"])
+            Definition(id: "go", name: "Go build cache", detail: "Clears reproducible build and test results", symbol: "hammer.fill", executable: "go", fixedPath: { _ in nil }, pathArguments: ["env", "GOCACHE"], cleanArguments: ["clean", "-cache", "-testcache"]),
+            Definition(id: "homebrew", name: "Homebrew", detail: "Prunes stale downloads and old formula versions", symbol: "mug.fill", executable: "brew", fixedPath: { _ in nil }, pathArguments: ["--cache"], cleanArguments: ["cleanup"])
         ]
     }
 
     func inspectAll() -> [GlobalCache] {
         definitions.compactMap(inspect)
+    }
+
+    func inspect(id: String) -> GlobalCache? {
+        definitions.first(where: { $0.id == id }).flatMap(inspect)
     }
 
     func installedPlaceholders() -> [GlobalCache] {
@@ -52,10 +57,45 @@ struct GlobalCacheService: Sendable {
         guard let current = inspect(definition), case .available = current.state else {
             throw GlobalCacheError.failed("The cache location could not be safely verified")
         }
-        let result = runner.run(executable, arguments: definition.cleanArguments, timeout: 120)
+        let result: CommandResult
+        if definition.id == "bun" {
+            result = try runBunCacheCleanup(executable, arguments: definition.cleanArguments)
+        } else if definition.id == "pnpm" {
+            result = try runInTemporaryDirectory(
+                named: "Sift-pnpm",
+                executable: executable,
+                arguments: definition.cleanArguments,
+                timeout: 120
+            )
+        } else {
+            result = runner.run(executable, arguments: definition.cleanArguments, timeout: definition.id == "homebrew" ? 300 : 120)
+        }
         guard result.exitCode == 0 else {
             throw GlobalCacheError.failed(Self.safeError(result.error))
         }
+    }
+
+    private func runBunCacheCleanup(_ executable: URL, arguments: [String]) throws -> CommandResult {
+        let directory = fileManager.temporaryDirectory
+            .appendingPathComponent("Sift-Bun-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? fileManager.removeItem(at: directory) }
+        let manifest = Data(#"{"name":"sift-cache-cleanup","version":"0.0.0","private":true}"#.utf8)
+        try manifest.write(to: directory.appendingPathComponent("package.json"), options: .atomic)
+        return runner.run(executable, arguments: arguments, timeout: 120, currentDirectory: directory)
+    }
+
+    private func runInTemporaryDirectory(
+        named prefix: String,
+        executable: URL,
+        arguments: [String],
+        timeout: TimeInterval
+    ) throws -> CommandResult {
+        let directory = fileManager.temporaryDirectory
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? fileManager.removeItem(at: directory) }
+        return runner.run(executable, arguments: arguments, timeout: timeout, currentDirectory: directory)
     }
 
     private func inspect(_ definition: Definition) -> GlobalCache? {
@@ -64,7 +104,27 @@ struct GlobalCacheService: Sendable {
         if let fixed = definition.fixedPath(NSHomeDirectory()) {
             path = fixed
         } else if let arguments = definition.pathArguments {
-            let result = runner.run(executable, arguments: arguments, timeout: 10)
+            let result: CommandResult
+            if definition.id == "pnpm" {
+                do {
+                    result = try runInTemporaryDirectory(
+                        named: "Sift-pnpm-inspect",
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: 10
+                    )
+                } catch {
+                    return GlobalCache(
+                        id: definition.id,
+                        name: definition.name,
+                        detail: definition.detail,
+                        symbolName: definition.symbol,
+                        state: .failed("Could not create a private inspection directory")
+                    )
+                }
+            } else {
+                result = runner.run(executable, arguments: arguments, timeout: 10)
+            }
             guard result.exitCode == 0 else {
                 return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: definition.symbol, state: .failed(Self.safeError(result.error)))
             }
@@ -90,11 +150,17 @@ struct GlobalCacheService: Sendable {
     }
 
     private func allocatedSize(of directory: URL) -> Int64 {
-        let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileAllocatedSizeKey, .totalFileAllocatedSizeKey]
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .fileAllocatedSizeKey,
+            .totalFileAllocatedSizeKey,
+            .mayShareFileContentKey
+        ]
         guard let enumerator = fileManager.enumerator(at: directory, includingPropertiesForKeys: Array(keys), options: [.skipsPackageDescendants]) else { return 0 }
         var total: Int64 = 0
         while let file = enumerator.nextObject() as? URL {
             guard let values = try? file.resourceValues(forKeys: keys), values.isRegularFile == true else { continue }
+            guard values.mayShareFileContent != true else { continue }
             total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
         }
         return total

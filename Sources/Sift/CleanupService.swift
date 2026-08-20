@@ -1,13 +1,17 @@
 import Foundation
 
 protocol TrashServing: Sendable {
-    func trashItem(at url: URL) throws
+    func trashItem(at url: URL) throws -> URL
 }
 
 struct SystemTrashService: TrashServing {
-    func trashItem(at url: URL) throws {
+    func trashItem(at url: URL) throws -> URL {
         var resultingURL: NSURL?
         try FileManager.default.trashItem(at: url, resultingItemURL: &resultingURL)
+        guard let resultingURL else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return resultingURL as URL
     }
 }
 
@@ -72,6 +76,7 @@ struct CleanupService: Sendable {
         )
 
         var trashed: [CleanupCandidate] = []
+        var trashedURLs: [URL] = []
         var failed: [(CleanupCandidate, String)] = []
 
         for candidate in candidates {
@@ -84,13 +89,14 @@ struct CleanupService: Sendable {
                 try validate(candidate: candidate, in: workspace)
                 // Revalidate at the last possible moment to narrow path-swap races.
                 try validate(candidate: candidate, in: workspace)
-                try trashService.trashItem(at: candidate.url)
+                let trashURL = try trashService.trashItem(at: candidate.url)
                 trashed.append(candidate)
+                trashedURLs.append(trashURL)
             } catch {
                 failed.append((candidate, error.localizedDescription))
             }
         }
 
-        return CleanupResult(trashed: trashed, failed: failed)
+        return CleanupResult(trashed: trashed, trashedURLs: trashedURLs, failed: failed)
     }
 }

@@ -11,36 +11,45 @@ struct DockerService: Sendable {
         guard localEndpoint(using: executable) != nil else {
             return .unavailable("Remote Docker contexts are not supported")
         }
-        let result = runner.run(executable, arguments: ["system", "df", "--format", "{{.Type}}|{{.Reclaimable}}"])
+        let result = runner.run(
+            executable,
+            arguments: ["system", "df", "--format", "{{.Type}}|{{.TotalCount}}|{{.Size}}|{{.Reclaimable}}"]
+        )
         guard result.exitCode == 0 else {
             return .unavailable(Self.userFacingError(result.error))
         }
-
-        for line in result.output.split(separator: "\n") {
-            let fields = line.split(separator: "|", maxSplits: 1).map(String.init)
-            guard fields.count == 2, fields[0].localizedCaseInsensitiveContains("image") else { continue }
-            let bytes = Self.parseHumanSize(fields[1]) ?? 0
-            return .available(
-                reclaimableBytes: bytes,
-                detail: bytes == 0 ? "No unused images" : ByteFormatting.string(bytes)
-            )
-        }
-
-        return .available(reclaimableBytes: 0, detail: "No unused images")
+        let usage = Self.parseSystemDF(result.output)
+        let detail = usage.imageCount == 0
+            ? "No local images"
+            : "\(usage.imageCount) image\(usage.imageCount == 1 ? "" : "s") · \(ByteFormatting.string(usage.imageBytes))"
+        return .available(reclaimableBytes: usage.reclaimableBytes, detail: detail)
     }
 
-    func pruneUnusedImages() throws -> String {
+    func pruneUnusedData() throws -> String {
         guard let executable = findDocker() else {
             throw DockerError.unavailable("Docker CLI not found")
         }
         guard localEndpoint(using: executable) != nil else {
             throw DockerError.unavailable("Remote Docker contexts are not supported")
         }
-        let result = runner.run(executable, arguments: ["image", "prune", "-a", "--force"], timeout: 120)
-        guard result.exitCode == 0 else {
-            throw DockerError.unavailable(Self.userFacingError(result.error))
+        let imageResult = runner.run(executable, arguments: ["image", "prune", "-a", "--force"], timeout: 120)
+        guard imageResult.exitCode == 0 else {
+            throw DockerError.unavailable(Self.userFacingError(imageResult.error))
         }
-        return result.output
+        let builderResult = runner.run(executable, arguments: ["builder", "prune", "-a", "--force"], timeout: 120)
+        guard builderResult.exitCode == 0 else {
+            throw DockerError.unavailable(Self.userFacingError(builderResult.error))
+        }
+        return imageResult.output + builderResult.output
+    }
+
+    static func reclaimedBytes(fromPruneOutput output: String) -> Int64? {
+        let prefix = "Total reclaimed space:"
+        let values = output.components(separatedBy: .newlines).compactMap { line -> Int64? in
+            guard let range = line.range(of: prefix, options: .caseInsensitive) else { return nil }
+            return parseHumanSize(String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces))
+        }
+        return values.isEmpty ? nil : values.reduce(0, +)
     }
 
     private func findDocker() -> URL? {
@@ -85,6 +94,22 @@ struct DockerService: Sendable {
         return Int64(number * multiplier)
     }
 
+    static func parseSystemDF(_ output: String) -> DockerUsage {
+        var usage = DockerUsage()
+        for line in output.split(separator: "\n") {
+            let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == 4 else { continue }
+            if fields[0].localizedCaseInsensitiveContains("image") {
+                usage.imageCount = Int(fields[1]) ?? 0
+                usage.imageBytes = parseHumanSize(fields[2]) ?? 0
+                usage.reclaimableBytes += parseHumanSize(fields[3]) ?? 0
+            } else if fields[0].localizedCaseInsensitiveContains("build cache") {
+                usage.reclaimableBytes += parseHumanSize(fields[3]) ?? 0
+            }
+        }
+        return usage
+    }
+
     static func userFacingError(_ rawError: String) -> String {
         let message = rawError.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalized = message.lowercased()
@@ -107,6 +132,12 @@ struct DockerService: Sendable {
 
         return "Docker is unavailable right now"
     }
+}
+
+struct DockerUsage: Equatable, Sendable {
+    var imageCount = 0
+    var imageBytes: Int64 = 0
+    var reclaimableBytes: Int64 = 0
 }
 
 enum DockerError: LocalizedError {

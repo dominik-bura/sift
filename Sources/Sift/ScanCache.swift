@@ -13,8 +13,9 @@ struct ScanCache: Sendable {
         } else {
             let base = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
                 ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            self.cacheURL = base.appendingPathComponent("Sift/scan-cache.json")
-            legacyCacheURL = base.appendingPathComponent("DevSweep/scan-cache.json")
+            // v2 excludes APFS copy-on-write shared blocks from reclaim estimates.
+            self.cacheURL = base.appendingPathComponent("Sift/scan-cache-v2.json")
+            legacyCacheURL = nil
         }
     }
 

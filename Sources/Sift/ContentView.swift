@@ -40,7 +40,16 @@ struct ContentView: View {
         }
         .frame(width: 460, height: 660)
         .tint(SiftTheme.accent)
-        .onAppear { model.scanIfStale() }
+        .onAppear {
+            model.refreshDiskSpace()
+            model.scanIfStale()
+        }
+        .task {
+            while !Task.isCancelled {
+                model.refreshDiskSpace()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
         .animation(.easeInOut(duration: 0.14), value: confirmation)
         .animation(.easeInOut(duration: 0.14), value: showSettings)
     }
@@ -71,12 +80,15 @@ struct ContentView: View {
                         Text(kind.actionTitle(model: model))
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(kind.isUpdate ? SiftTheme.accent : .red)
+                    .siftConfirmationButton(tint: kind.isUpdate ? SiftTheme.accent : SiftTheme.destructiveAccent)
                     .controlSize(.large)
 
                     Button("Cancel") { confirmation = nil }
-                        .buttonStyle(.bordered).controlSize(.large).frame(maxWidth: .infinity)
+                        .buttonStyle(.plain)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                        .frame(maxWidth: .infinity)
                 }
             }
             .padding(20).frame(width: 330)
@@ -196,12 +208,13 @@ struct ContentView: View {
             HStack(spacing: 13) {
                 Image(systemName: "shippingbox.fill").font(.title2).foregroundStyle(.blue).frame(width: 30)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Docker images").font(.headline)
+                    Text("Docker storage").font(.headline)
                     switch model.dockerState {
                     case .checking: Text("Checking Docker…").foregroundStyle(.secondary)
                     case let .unavailable(message): Text(message).foregroundStyle(.secondary)
                     case let .available(bytes, detail):
-                        Text(bytes > 0 ? "\(ByteFormatting.string(bytes)) reclaimable" : detail).foregroundStyle(.secondary)
+                        Text(bytes > 0 ? "\(detail) · \(ByteFormatting.string(bytes)) reclaimable" : detail).foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
                 Spacer()
@@ -243,14 +256,20 @@ struct ContentView: View {
                                         }
                                     }
                                     Spacer(minLength: 6)
-                                    if case .checking = cache.state {
+                                    if model.cleaningGlobalCacheID == cache.id || cache.state == .checking {
                                         ProgressView()
                                             .controlSize(.small)
                                             .tint(SiftTheme.accent)
-                                            .accessibilityLabel("Measuring \(cache.name)")
+                                            .accessibilityLabel(model.cleaningGlobalCacheID == cache.id ? "Cleaning \(cache.name)" : "Measuring \(cache.name)")
+                                    } else if case let .failed(message) = cache.state {
+                                        Text(message)
+                                            .font(.caption2)
+                                            .foregroundStyle(.red)
+                                            .lineLimit(1)
+                                            .help(message)
                                     } else if cache.bytes > 0 {
-                                        Text(ByteFormatting.string(cache.bytes)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                                        Button("Clean") { confirmation = .global(cache.id) }
+                                        Text("up to \(ByteFormatting.string(cache.bytes))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                        Button(cache.onlyPrunesUnusedData ? "Prune" : "Clean") { confirmation = .global(cache.id) }
                                             .disabled(model.isCleaning)
                                     } else {
                                         Text("Empty").font(.caption).foregroundStyle(.tertiary)
@@ -260,7 +279,7 @@ struct ContentView: View {
                             }
                         }
                     }
-                    Text("Package-manager commands remove caches permanently; they never touch installed tools or project files.")
+                    Text("Estimates exclude APFS-shared blocks. Prune removes only unused entries and may reclaim less.")
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
                 .padding(.bottom, 20)
@@ -552,7 +571,16 @@ struct ContentView: View {
 
     private var footer: some View {
         VStack(spacing: 6) {
-            if let message = model.lastMessage { Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+            if let message = model.lastMessage {
+                HStack(spacing: 8) {
+                    Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Spacer(minLength: 4)
+                    if !model.lastTrashedURLs.isEmpty {
+                        Button("Show in Trash") { model.showLastTrashedItems() }
+                            .buttonStyle(.plain).font(.caption.weight(.semibold)).foregroundStyle(SiftTheme.accent)
+                    }
+                }
+            }
             HStack(spacing: 12) {
                 Button { showSettings = true } label: {
                     Image(systemName: "gearshape.fill")
@@ -560,7 +588,11 @@ struct ContentView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).foregroundStyle(.secondary).help("Settings")
-                Label(freeSpaceText, systemImage: "internaldrive").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                HStack(spacing: 5) {
+                    Image(systemName: "internaldrive").frame(width: 22, height: 22)
+                    Text(freeSpaceText)
+                }
+                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
                 Button { confirmation = .folders } label: {
@@ -627,7 +659,7 @@ private enum CleanupConfirmation: Equatable {
         case .folders:
             return "Only the selected generated folders will move to macOS Trash. Project files and workspace roots are excluded."
         case .docker:
-            return "Docker image pruning is permanent and is allowed only for a local Unix-socket Docker Engine. All containers and volumes remain untouched."
+            return "Pruning is permanent and uses only the local Docker Engine. Unused images and build cache are removed; active images, containers, and volumes remain untouched."
         case .global:
             return "This package manager performs permanent cache cleanup. Cached artifacts may need to be downloaded or rebuilt later; installed tools and project files remain untouched."
         case .update:
@@ -638,8 +670,10 @@ private enum CleanupConfirmation: Equatable {
     @MainActor func title(model: AppModel) -> String {
         switch self {
         case .folders: return "Move selected folders to Trash?"
-        case .docker: return "Remove unused Docker images?"
-        case let .global(id): return "Clean \(model.globalCaches.first(where: { $0.id == id })?.name ?? "global cache")?"
+        case .docker: return "Remove unused Docker data?"
+        case let .global(id):
+            let cache = model.globalCaches.first(where: { $0.id == id })
+            return "\(cache?.onlyPrunesUnusedData == true ? "Prune" : "Clean") \(cache?.name ?? "global cache")?"
         case let .update(release): return "Install Sift \(release.version)?"
         }
     }
@@ -647,8 +681,11 @@ private enum CleanupConfirmation: Equatable {
     @MainActor func actionTitle(model: AppModel) -> String {
         switch self {
         case .folders: return "Move \(model.selectedCandidates.count) folders · \(ByteFormatting.string(model.selectedBytes)) to Trash"
-        case .docker: return "Prune unused images"
-        case .global: return "Clean cache permanently"
+        case .docker: return "Prune images and build cache"
+        case let .global(id):
+            return model.globalCaches.first(where: { $0.id == id })?.onlyPrunesUnusedData == true
+                ? "Prune unused cache data"
+                : "Clear cache permanently"
         case .update: return "Download and install update"
         }
     }
@@ -748,6 +785,15 @@ private extension View {
             background(.quaternary, in: Capsule())
         }
     }
+
+    @ViewBuilder
+    func siftConfirmationButton(tint: Color) -> some View {
+        if #available(macOS 26.0, *) {
+            buttonStyle(.glass).tint(tint)
+        } else {
+            buttonStyle(.bordered).tint(tint)
+        }
+    }
 }
 
 private struct BehindWindowContentMaterial: NSViewRepresentable {
@@ -773,6 +819,7 @@ private struct BehindWindowContentMaterial: NSViewRepresentable {
 
 private enum SiftTheme {
     static let accent = Color(red: 0.96, green: 0.29, blue: 0.14)
+    static let destructiveAccent = Color(red: 0.96, green: 0.29, blue: 0.14)
     static let warmOrange = Color(red: 1.00, green: 0.49, blue: 0.12)
     static let brandGradient = LinearGradient(
         colors: [warmOrange, accent],

@@ -13,8 +13,8 @@ Sift finds regenerable files across Git worktrees—such as `node_modules`, `.ne
 - Groups linked worktrees by repository and shows their branch, path, and reclaimable size
 - Displays scan results progressively, with selection at the global, worktree, and folder level
 - Moves generated project folders to macOS Trash so they remain recoverable
-- Cleans unused Docker images without touching containers or volumes
-- Supports global uv, pnpm, Bun, Yarn, npm, and Go caches
+- Cleans unused Docker images and build cache without touching containers or volumes
+- Supports global uv, pnpm, Bun, Yarn, npm, Go, and Homebrew caches
 - Runs entirely on your Mac with no analytics or telemetry
 - Includes built-in update checks from the app's Settings panel
 
@@ -24,7 +24,16 @@ Sift finds regenerable files across Git worktrees—such as `node_modules`, `.ne
 2. Open the disk image and drag **Sift** onto the **Applications** shortcut.
 3. Eject the disk image, then open Sift from Applications. Its funnel icon will appear in the menu bar.
 
-If macOS blocks the first launch, Control-click the app in Finder, choose **Open**, and confirm once.
+### First launch
+
+If macOS shows **“Sift Not Opened”** for an older or locally built copy, you can allow that specific copy as follows:
+
+1. Try to open Sift once, then dismiss the warning.
+2. Open **System Settings → Privacy & Security**.
+3. Scroll down to **Security** and click **Open Anyway** next to the message about Sift.
+4. Confirm by clicking **Open** and entering your Mac password if requested.
+
+macOS saves Sift as an exception, so this is required only once for that installed copy. See [Apple's instructions for opening an unnotarized app](https://support.apple.com/en-us/102445).
 
 Sift requires macOS 14 Sonoma or newer.
 
@@ -42,7 +51,7 @@ Use the gear in the bottom-left corner to add or remove scanned project folders,
 | Area | Cleanup behavior |
 | --- | --- |
 | Worktrees | Selected generated folders are moved to macOS Trash. Project roots and source files are never selected. |
-| Docker | Unused images are permanently pruned after a separate confirmation. Containers and volumes are preserved. |
+| Docker | Unused images and build cache are permanently pruned after a separate confirmation. Containers and volumes are preserved. |
 | Global caches | The installed tool's official cache-cleaning command is run after a separate confirmation. |
 
 Supported generated folders include:

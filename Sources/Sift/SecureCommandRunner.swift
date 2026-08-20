@@ -9,19 +9,31 @@ struct CommandResult: Sendable {
 }
 
 struct SecureCommandRunner: Sendable {
-    func run(_ executable: URL, arguments: [String], timeout: TimeInterval = 30) -> CommandResult {
+    func run(
+        _ executable: URL,
+        arguments: [String],
+        timeout: TimeInterval = 30,
+        currentDirectory: URL? = nil
+    ) -> CommandResult {
         let process = Process()
         let outputPipe = Pipe()
         let errorPipe = Pipe()
         process.executableURL = executable
         process.arguments = arguments
+        process.currentDirectoryURL = currentDirectory
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
         var environment = ProcessInfo.processInfo.environment
         environment.removeValue(forKey: "DOCKER_HOST")
         environment.removeValue(forKey: "DOCKER_CONTEXT")
-        environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        var trustedPathDirectories = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        let marker = "/installation/"
+        if let range = executable.standardizedFileURL.path.range(of: marker) {
+            let installationRoot = String(executable.standardizedFileURL.path[..<range.upperBound])
+            trustedPathDirectories.insert(installationRoot + "bin", at: 0)
+        }
+        environment["PATH"] = trustedPathDirectories.joined(separator: ":")
         environment["NO_COLOR"] = "1"
         process.environment = environment
 
@@ -85,7 +97,7 @@ private final class LockedData: @unchecked Sendable {
 enum TrustedExecutable {
     static func find(_ name: String, additionalPaths: [String] = []) -> URL? {
         let home = NSHomeDirectory()
-        let candidates = additionalPaths + [
+        let candidates = additionalPaths + fnmCandidates(name: name, home: home) + [
             "/opt/homebrew/bin/\(name)",
             "/usr/local/bin/\(name)",
             "/usr/bin/\(name)",
@@ -105,5 +117,20 @@ enum TrustedExecutable {
             return URL(fileURLWithPath: path)
         }
         return nil
+    }
+
+    private static func fnmCandidates(name: String, home: String) -> [String] {
+        let versions = URL(fileURLWithPath: home, isDirectory: true)
+            .appendingPathComponent(".local/share/fnm/node-versions", isDirectory: true)
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: versions,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return entries.sorted {
+            let left = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let right = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return left > right
+        }.map { $0.appendingPathComponent("installation/bin/\(name)").path }
     }
 }
