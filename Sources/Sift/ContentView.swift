@@ -63,7 +63,7 @@ struct ContentView: View {
                     Text(kind.title(model: model))
                         .font(.headline)
                 }
-                Text(kind.message)
+                Text(kind.message(model: model))
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 VStack(spacing: 8) {
                     Button {
@@ -74,6 +74,7 @@ struct ContentView: View {
                         case .allGlobals: model.cleanAllGlobalCaches()
                         case let .global(id):
                             if let cache = model.globalCaches.first(where: { $0.id == id }) { model.cleanGlobalCache(cache) }
+                        case .stopUVProcesses: model.stopUVLockProcesses()
                         case let .update(release): model.installUpdate(release)
                         }
                     } label: {
@@ -151,7 +152,7 @@ struct ContentView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text(ByteFormatting.string(model.totalReclaimableBytes))
                             .font(.system(size: 32, weight: .bold, design: .rounded)).monospacedDigit()
-                        Text("reclaimable").font(.headline).foregroundStyle(.secondary)
+                        Text("developer data found").font(.headline).foregroundStyle(.secondary)
                     }
                     GeometryReader { proxy in
                         ZStack(alignment: .leading) {
@@ -225,6 +226,9 @@ struct ContentView: View {
                                         Text(cache.name).font(.callout.weight(.semibold))
                                         if case let .available(_, path) = cache.state {
                                             Text(path).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+                                        } else if case let .blocked(_, _, processCount) = cache.state {
+                                            Text("\(processCount) running uv command\(processCount == 1 ? " is" : "s are") preventing cache cleanup")
+                                                .font(.caption2).foregroundStyle(.orange).lineLimit(1)
                                         }
                                     }
                                     Spacer(minLength: 6)
@@ -233,6 +237,12 @@ struct ContentView: View {
                                             .controlSize(.small)
                                             .tint(SiftTheme.accent)
                                             .accessibilityLabel(model.cleaningGlobalCacheID == cache.id ? "Cleaning \(cache.name)" : "Measuring \(cache.name)")
+                                    } else if case let .blocked(bytes, _, processCount) = cache.state {
+                                        Text(ByteFormatting.string(bytes))
+                                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                        Button("Stop uv") { confirmation = .stopUVProcesses(processCount) }
+                                            .disabled(model.isCleaning)
+                                            .help("Stop the uv commands so the cache can be cleaned")
                                     } else if case let .failed(message) = cache.state {
                                         Text(message)
                                             .font(.caption2)
@@ -251,7 +261,7 @@ struct ContentView: View {
                             }
                         }
                     }
-                    Text("Estimates exclude APFS-shared blocks. Prune removes only unused entries and may reclaim less.")
+                    Text("Sizes are attributed to these folders. APFS clones may cause the space actually released to be smaller.")
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
                 .padding(.bottom, 20)
@@ -303,6 +313,8 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .font(.caption.weight(.medium))
+                Text("Worktree values are generated-folder sizes. Actual freed space is measured after permanent deletion.")
+                    .font(.caption2).foregroundStyle(.tertiary)
             }
 
             if model.workspaces.isEmpty {
@@ -488,6 +500,29 @@ struct ContentView: View {
                         Divider()
 
                         VStack(alignment: .leading, spacing: 10) {
+                            Text("WORKTREE CLEANUP").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            HStack(alignment: .center, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Delete immediately").font(.caption.weight(.medium))
+                                    Text("Skip macOS Trash for generated worktree folders").font(.caption2).foregroundStyle(.tertiary)
+                                }
+                                Spacer(minLength: 12)
+                                Toggle("Delete immediately", isOn: $model.deletesImmediately)
+                                    .labelsHidden()
+                                    .toggleStyle(.switch)
+                                    .controlSize(.small)
+                                    .tint(SiftTheme.accent)
+                                    .accessibilityLabel("Delete generated folders immediately")
+                            }
+                            if model.deletesImmediately {
+                                Label("Permanent deletion cannot be undone. Workspace roots, source files, and .git remain protected.", systemImage: "exclamationmark.triangle.fill")
+                                    .font(.caption2).foregroundStyle(.orange)
+                            }
+                        }
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 10) {
                             HStack {
                                 Text("SCANNED FOLDERS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                                 Spacer()
@@ -507,7 +542,7 @@ struct ContentView: View {
                             }
                         }
 
-                        Label("Generated worktree folders move to Trash. Global cache commands are permanent and always require confirmation.", systemImage: "lock.shield.fill")
+                        Label(model.deletesImmediately ? "Generated worktree folders are deleted permanently. Global cache commands are also permanent." : "Generated worktree folders move to Trash. Global cache commands are permanent and always require confirmation.", systemImage: "lock.shield.fill")
                             .font(.caption2).foregroundStyle(.tertiary)
                     }
                     .padding(16)
@@ -625,10 +660,15 @@ struct ContentView: View {
                     if isInitialScan {
                         HStack { ProgressView().controlSize(.small); Text("Scanning…") }.frame(minWidth: 170)
                     } else if model.isCleaning { ProgressView().controlSize(.small).frame(minWidth: 170) }
-                    else { Label("Move to Trash · \(ByteFormatting.string(model.selectedBytes))", systemImage: "trash") }
+                    else {
+                        Label(
+                            "\(model.deletesImmediately ? "Delete" : "Move to Trash") · \(ByteFormatting.string(model.selectedBytes)) selected",
+                            systemImage: model.deletesImmediately ? "trash.slash" : "trash"
+                        )
+                    }
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large)
-                .disabled(model.selectedCandidates.isEmpty || model.isCleaning || model.isScanning)
+                .disabled(model.selectedCandidates.isEmpty || model.isCleaning || isInitialScan)
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
@@ -670,6 +710,7 @@ private enum CleanupConfirmation: Equatable {
     case docker
     case allGlobals
     case global(String)
+    case stopUVProcesses(Int)
     case update(UpdateRelease)
 
     var isUpdate: Bool {
@@ -683,14 +724,17 @@ private enum CleanupConfirmation: Equatable {
         case .docker: return "shippingbox.fill"
         case .allGlobals: return "externaldrive.badge.xmark"
         case .global: return "externaldrive.badge.xmark"
+        case .stopUVProcesses: return "stop.circle.fill"
         case .update: return "arrow.down.app.fill"
         }
     }
 
-    var message: String {
+    @MainActor func message(model: AppModel) -> String {
         switch self {
         case .folders:
-            return "Only the selected generated folders will move to macOS Trash. Project files and workspace roots are excluded."
+            return model.deletesImmediately
+                ? "Only the selected generated folders will be deleted permanently. This cannot be undone. Project files, .git data, and workspace roots remain excluded. The displayed value is their folder-attributed size; Sift will report the actual macOS free-space increase afterward."
+                : "Only the selected generated folders will move to macOS Trash. Project files and workspace roots are excluded. Moving items to Trash does not release disk space until Trash is emptied."
         case .docker:
             return "Pruning is permanent and uses only the local Docker Engine. Unused images and build cache are removed; active images, containers, and volumes remain untouched."
         case .allGlobals:
@@ -700,6 +744,8 @@ private enum CleanupConfirmation: Equatable {
                 return "uv requires all active uv commands to stop before its cache can be cleared safely. Cached artifacts will be downloaded or rebuilt later; Sift never bypasses uv's cache lock."
             }
             return "This package manager performs permanent cache cleanup. Cached artifacts may need to be downloaded or rebuilt later; installed tools and project files remain untouched."
+        case let .stopUVProcesses(count):
+            return "This will terminate \(count) uv command\(count == 1 ? "" : "s") currently holding uv's cache lock. Any development servers or other work started by those commands will stop. Project files and virtual environments remain untouched."
         case .update:
             return "Sift will download the update, verify its checksum, identity, version, and code signature, then replace and relaunch this app."
         }
@@ -707,25 +753,30 @@ private enum CleanupConfirmation: Equatable {
 
     @MainActor func title(model: AppModel) -> String {
         switch self {
-        case .folders: return "Move selected folders to Trash?"
+        case .folders: return model.deletesImmediately ? "Permanently delete selected folders?" : "Move selected folders to Trash?"
         case .docker: return "Remove unused Docker data?"
         case .allGlobals: return "Clean Docker and all global caches?"
         case let .global(id):
             let cache = model.globalCaches.first(where: { $0.id == id })
             return "\(cache?.onlyPrunesUnusedData == true ? "Prune" : "Clean") \(cache?.name ?? "global cache")?"
+        case .stopUVProcesses: return "Stop active uv commands?"
         case let .update(release): return "Install Sift \(release.version)?"
         }
     }
 
     @MainActor func actionTitle(model: AppModel) -> String {
         switch self {
-        case .folders: return "Move \(model.selectedCandidates.count) folders · \(ByteFormatting.string(model.selectedBytes)) to Trash"
+        case .folders:
+            return model.deletesImmediately
+                ? "Delete \(model.selectedCandidates.count) folders · \(ByteFormatting.string(model.selectedBytes)) selected"
+                : "Move \(model.selectedCandidates.count) folders · \(ByteFormatting.string(model.selectedBytes)) to Trash"
         case .docker: return "Prune images and build cache"
         case .allGlobals: return "Clean \(model.cleanableGlobalStorageCount) items"
         case let .global(id):
             return model.globalCaches.first(where: { $0.id == id })?.onlyPrunesUnusedData == true
                 ? "Prune unused cache data"
                 : "Clear cache permanently"
+        case .stopUVProcesses: return "Stop uv commands"
         case .update: return "Download and install update"
         }
     }

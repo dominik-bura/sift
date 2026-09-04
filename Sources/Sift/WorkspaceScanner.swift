@@ -137,7 +137,8 @@ struct WorkspaceScanner: Sendable {
                         CleanupCandidate(
                             url: item.standardizedFileURL,
                             kind: kind,
-                            allocatedBytes: size,
+                            allocatedBytes: size.attributed,
+                            conservativeBytes: size.conservative,
                             modificationDate: modificationDate
                         )
                     )
@@ -203,7 +204,7 @@ struct WorkspaceScanner: Sendable {
         return ("Detached · \(head.prefix(8))", commonDirectory, repositoryName)
     }
 
-    private func allocatedSize(of directory: URL) -> Int64 {
+    private func allocatedSize(of directory: URL) -> (attributed: Int64, conservative: Int64) {
         let keys: Set<URLResourceKey> = [
             .isRegularFileKey,
             .fileAllocatedSizeKey,
@@ -215,17 +216,19 @@ struct WorkspaceScanner: Sendable {
             includingPropertiesForKeys: Array(keys),
             options: [.skipsPackageDescendants],
             errorHandler: { _, _ in true }
-        ) else { return 0 }
+        ) else { return (0, 0) }
 
-        var total: Int64 = 0
+        var attributed: Int64 = 0
+        var conservative: Int64 = 0
         while let file = enumerator.nextObject() as? URL {
             guard let values = try? file.resourceValues(forKeys: keys), values.isRegularFile == true else { continue }
             // APFS reports a clone's full allocated size even though deleting it may not free
             // the shared blocks. Count only blocks Foundation identifies as non-shared.
-            guard values.mayShareFileContent != true else { continue }
-            total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+            let bytes = Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+            attributed += bytes
+            if values.mayShareFileContent != true { conservative += bytes }
         }
-        return total
+        return (attributed, conservative)
     }
 
     private static let discoveryExcludedNames: Set<String> = [

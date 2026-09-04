@@ -13,8 +13,7 @@ struct ScanCache: Sendable {
         } else {
             let base = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
                 ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            // v2 excludes APFS copy-on-write shared blocks from reclaim estimates.
-            self.cacheURL = base.appendingPathComponent("Sift/scan-cache-v2.json")
+            self.cacheURL = base.appendingPathComponent("Sift/scan-cache-v3.json")
             legacyCacheURL = nil
         }
     }
@@ -46,6 +45,7 @@ struct ScanCache: Sendable {
                     url: url,
                     kind: kind,
                     allocatedBytes: candidate.allocatedBytes,
+                    conservativeBytes: candidate.conservativeBytes,
                     modificationDate: candidate.modificationDate
                 )
             }
@@ -96,11 +96,13 @@ private struct WorkspaceRecord: Codable {
 private struct CandidateRecord: Codable {
     let path: String
     let allocatedBytes: Int64
+    let conservativeBytes: Int64?
     let modificationDate: Date?
 
     init(_ candidate: CleanupCandidate) {
         path = candidate.url.path
         allocatedBytes = candidate.allocatedBytes
+        conservativeBytes = candidate.conservativeBytes
         modificationDate = candidate.modificationDate
     }
 }

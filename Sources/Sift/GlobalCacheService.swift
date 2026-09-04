@@ -2,6 +2,7 @@ import Foundation
 
 struct GlobalCacheService: Sendable {
     private let runner = SecureCommandRunner()
+    private let uvLockProcesses = UVLockProcessService()
     private var fileManager: FileManager { .default }
 
     private struct Definition: Sendable {
@@ -142,6 +143,18 @@ struct GlobalCacheService: Sendable {
             return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: definition.symbol, state: .failed("Cache location is outside your home folder"))
         }
         let bytes = allocatedSize(of: validated)
+        if definition.id == "uv" {
+            let holders = uvLockProcesses.holders()
+            if !holders.isEmpty {
+                return GlobalCache(
+                    id: definition.id,
+                    name: definition.name,
+                    detail: definition.detail,
+                    symbolName: definition.symbol,
+                    state: .blocked(bytes: bytes, path: validated.path, processCount: holders.count)
+                )
+            }
+        }
         return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: definition.symbol, state: .available(bytes: bytes, path: validated.path))
     }
 

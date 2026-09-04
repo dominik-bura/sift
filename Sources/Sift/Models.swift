@@ -43,12 +43,20 @@ struct CleanupCandidate: Identifiable, Hashable, Sendable {
     let url: URL
     let kind: CleanupKind
     let allocatedBytes: Int64
+    let conservativeBytes: Int64
     let modificationDate: Date?
 
-    init(url: URL, kind: CleanupKind, allocatedBytes: Int64, modificationDate: Date? = nil) {
+    init(
+        url: URL,
+        kind: CleanupKind,
+        allocatedBytes: Int64,
+        conservativeBytes: Int64? = nil,
+        modificationDate: Date? = nil
+    ) {
         self.url = url
         self.kind = kind
         self.allocatedBytes = allocatedBytes
+        self.conservativeBytes = conservativeBytes ?? allocatedBytes
         self.modificationDate = modificationDate
     }
 }
@@ -71,6 +79,10 @@ struct Workspace: Identifiable, Hashable, Sendable {
 
     var reclaimableBytes: Int64 {
         candidates.reduce(0) { $0 + $1.allocatedBytes }
+    }
+
+    var conservativeReclaimableBytes: Int64 {
+        candidates.reduce(0) { $0 + $1.conservativeBytes }
     }
 }
 
@@ -101,6 +113,7 @@ struct GlobalCache: Identifiable, Equatable, Sendable {
         case checking
         case unavailable
         case available(bytes: Int64, path: String)
+        case blocked(bytes: Int64, path: String, processCount: Int)
         case failed(String)
     }
 
@@ -112,6 +125,7 @@ struct GlobalCache: Identifiable, Equatable, Sendable {
 
     var bytes: Int64 {
         if case let .available(bytes, _) = state { return bytes }
+        if case let .blocked(bytes, _, _) = state { return bytes }
         return 0
     }
 

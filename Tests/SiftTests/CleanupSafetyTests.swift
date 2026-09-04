@@ -3,6 +3,26 @@ import XCTest
 @testable import Sift
 
 final class CleanupSafetyTests: XCTestCase {
+    func testUVLockParserAcceptsOnlyUVProcessesAndDeduplicatesPIDs() {
+        let output = """
+        p1284
+        cuv
+        f9
+        p37126
+        cuv
+        f9
+        p37126
+        cuv
+        p999
+        cpython
+        """
+
+        XCTAssertEqual(
+            UVLockProcessService.parse(output),
+            [UVLockProcess(pid: 1284, command: "uv"), UVLockProcess(pid: 37126, command: "uv")]
+        )
+    }
+
     private var temporaryRoot: URL!
 
     override func setUpWithError() throws {
@@ -51,6 +71,37 @@ final class CleanupSafetyTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: trashURL.appendingPathComponent(".next").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: workspaceURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: workspaceURL.appendingPathComponent("source.swift").path))
+    }
+
+    func testCleanerCanDeleteAllowListedDirectoryImmediatelyButPreservesWorkspace() throws {
+        let workspaceURL = temporaryRoot.appendingPathComponent("permanent-project", isDirectory: true)
+        let candidateURL = workspaceURL.appendingPathComponent("node_modules", isDirectory: true)
+        let sourceURL = workspaceURL.appendingPathComponent("source.swift")
+        try FileManager.default.createDirectory(at: workspaceURL.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: candidateURL, withIntermediateDirectories: true)
+        try Data("source".utf8).write(to: sourceURL)
+        let candidate = CleanupCandidate(
+            url: candidateURL,
+            kind: CleanupKind.byDirectoryName["node_modules"]!,
+            allocatedBytes: 4
+        )
+        let workspace = Workspace(
+            url: workspaceURL,
+            name: "permanent-project",
+            branch: "main",
+            repositoryID: workspaceURL.appendingPathComponent(".git").path,
+            repositoryName: "permanent-project",
+            candidates: [candidate]
+        )
+
+        let result = CleanupService().remove([candidate], from: [workspace], mode: .deleteImmediately)
+
+        XCTAssertEqual(result.trashed.count, 1)
+        XCTAssertTrue(result.trashedURLs.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: candidateURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: workspaceURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: workspaceURL.appendingPathComponent(".git").path))
     }
 
     func testCleanerRejectsWorkspaceRootEvenIfCandidateMetadataIsForged() throws {

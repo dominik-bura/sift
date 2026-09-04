@@ -6,13 +6,13 @@
 
 <p align="center"><strong>A native macOS menu-bar app for safely reclaiming developer storage.</strong></p>
 
-Sift finds regenerable files across Git worktrees—such as `node_modules`, `.next`, and `.venv`—and lets you move them to macOS Trash without deleting your projects. It also shows reclaimable Docker images and common global developer caches in one place.
+Sift finds regenerable files across Git worktrees—such as `node_modules`, `.next`, and `.venv`—and lets you remove them without deleting your projects. It also shows reclaimable Docker images and common global developer caches in one place.
 
 ## Highlights
 
-- Groups linked worktrees by repository and shows their branch, path, and reclaimable size
+- Groups linked worktrees by repository and shows their branch, path, and generated-folder size
 - Displays scan results progressively, with selection at the global, worktree, and folder level
-- Moves generated project folders to macOS Trash so they remain recoverable
+- Moves generated project folders to macOS Trash by default, with an optional permanent mode
 - Cleans unused Docker images and build cache without touching containers or volumes
 - Supports global uv, pnpm, Bun, Yarn, npm, Go, and Homebrew caches
 - Runs entirely on your Mac with no analytics or telemetry
@@ -44,13 +44,13 @@ Sift requires macOS 14 Sonoma or newer.
 3. Select only the items you want to remove.
 4. Click **Move to Trash** and confirm the cleanup.
 
-Use the gear in the bottom-left corner to add or remove scanned project folders, see the installed version, or check for updates.
+Use the gear in the bottom-left corner to add or remove scanned project folders, choose the worktree cleanup mode, see the installed version, or check for updates.
 
 ## What Sift cleans
 
 | Area | Cleanup behavior |
 | --- | --- |
-| Worktrees | Selected generated folders are moved to macOS Trash. Project roots and source files are never selected. |
+| Worktrees | Selected generated folders move to macOS Trash by default. A default-off setting can delete them immediately after an additional explicit confirmation. Project roots and source files are never selected. |
 | Docker | Unused images and build cache are permanently pruned after a separate confirmation. Containers and volumes are preserved. |
 | Global caches | The installed tool's official cache-cleaning command is run after a separate confirmation. |
 
@@ -67,7 +67,7 @@ Sift is designed around a narrow cleanup boundary:
 - It never deletes a workspace or project root, `.git` data, source files, installed tools, managed Python versions, or lockfiles.
 - Every worktree target must have an allow-listed folder name, be a strict descendant of a discovered workspace, and pass validation again immediately before cleanup.
 - Symbolic links and paths outside the selected workspace are rejected.
-- Worktree folders go to macOS Trash instead of being deleted directly.
+- Worktree folders go to macOS Trash by default. Permanent deletion is available only through a persistent, default-off setting and is clearly identified in the confirmation.
 - Docker cleanup accepts only a local Unix socket and rejects remote Docker contexts.
 - Docker and global cache actions are clearly marked as permanent and require their own confirmation.
 

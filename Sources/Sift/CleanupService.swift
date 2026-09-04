@@ -68,7 +68,11 @@ struct CleanupService: Sendable {
         guard values.isSymbolicLink != true else { throw CleanupSafetyError.symbolicLink }
     }
 
-    func remove(_ candidates: [CleanupCandidate], from workspaces: [Workspace]) -> CleanupResult {
+    func remove(
+        _ candidates: [CleanupCandidate],
+        from workspaces: [Workspace],
+        mode: CleanupMode = .trash
+    ) -> CleanupResult {
         let workspaceByCandidate = Dictionary(
             uniqueKeysWithValues: workspaces.flatMap { workspace in
                 workspace.candidates.map { ($0.id, workspace) }
@@ -89,9 +93,16 @@ struct CleanupService: Sendable {
                 try validate(candidate: candidate, in: workspace)
                 // Revalidate at the last possible moment to narrow path-swap races.
                 try validate(candidate: candidate, in: workspace)
-                let trashURL = try trashService.trashItem(at: candidate.url)
+                let trashURL: URL?
+                switch mode {
+                case .trash:
+                    trashURL = try trashService.trashItem(at: candidate.url)
+                case .deleteImmediately:
+                    try fileManager.removeItem(at: candidate.url)
+                    trashURL = nil
+                }
                 trashed.append(candidate)
-                trashedURLs.append(trashURL)
+                if let trashURL { trashedURLs.append(trashURL) }
             } catch {
                 failed.append((candidate, error.localizedDescription))
             }
@@ -99,4 +110,9 @@ struct CleanupService: Sendable {
 
         return CleanupResult(trashed: trashed, trashedURLs: trashedURLs, failed: failed)
     }
+}
+
+enum CleanupMode: Equatable, Sendable {
+    case trash
+    case deleteImmediately
 }

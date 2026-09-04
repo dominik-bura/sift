@@ -24,17 +24,23 @@ final class AppModel: ObservableObject {
     @Published private(set) var availableDiskBytes: Int64?
     @Published private(set) var totalDiskBytes: Int64?
     @Published private(set) var lastTrashedURLs: [URL] = []
+    @Published var deletesImmediately: Bool {
+        didSet { UserDefaults.standard.set(deletesImmediately, forKey: "deleteGeneratedFoldersImmediately") }
+    }
 
     private let scanner = WorkspaceScanner()
     private let cleaner = CleanupService()
     private let docker = DockerService()
     private let globalCacheService = GlobalCacheService()
+    private let uvLockProcessService = UVLockProcessService()
     private let scanCache = ScanCache()
     private let updateService = UpdateService()
     private let defaultsKey = "searchRoots"
     private let lastSyncedKey = "lastSuccessfulScanDate"
+    private var rescanWhenIdle = false
 
     init() {
+        deletesImmediately = UserDefaults.standard.bool(forKey: "deleteGeneratedFoldersImmediately")
         if Bundle.main.bundleIdentifier == "com.dominikbura.sift" {
             Self.migrateLegacyDefaultsIfNeeded()
         }
@@ -66,6 +72,7 @@ final class AppModel: ObservableObject {
     var candidates: [CleanupCandidate] { workspaces.flatMap(\.candidates) }
     var selectedCandidates: [CleanupCandidate] { candidates.filter { selectedCandidateIDs.contains($0.id) } }
     var selectedBytes: Int64 { selectedCandidates.reduce(0) { $0 + $1.allocatedBytes } }
+    var selectedConservativeBytes: Int64 { selectedCandidates.reduce(0) { $0 + $1.conservativeBytes } }
     var cleanableGlobalCaches: [GlobalCache] {
         globalCaches.filter { cache in
             if case let .available(bytes, _) = cache.state { return bytes > 0 }
@@ -89,6 +96,9 @@ final class AppModel: ObservableObject {
         workspaces.reduce(0) { $0 + $1.reclaimableBytes }
             + dockerState.reclaimableBytes
             + globalCaches.reduce(0) { $0 + $1.reclaimableBytes }
+    }
+    var conservativeWorktreeBytes: Int64 {
+        workspaces.reduce(0) { $0 + $1.conservativeReclaimableBytes }
     }
     var repositoryGroups: [RepositoryGroup] {
         Dictionary(grouping: workspaces, by: \.repositoryID)
@@ -169,6 +179,10 @@ final class AppModel: ObservableObject {
             lastScanDuration = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
             isScanning = false
             isBackgroundRefreshing = false
+            if rescanWhenIdle, !isCleaning {
+                rescanWhenIdle = false
+                scan(inBackground: true, preservingMessage: true)
+            }
         }
     }
 
@@ -227,21 +241,40 @@ final class AppModel: ObservableObject {
         isCleaning = true
         let cleaner = cleaner
         let currentWorkspaces = workspaces
+        let mode: CleanupMode = deletesImmediately ? .deleteImmediately : .trash
+        let before = Self.diskSpaceSnapshot().available
 
         Task {
             let result = await Task.detached(priority: .userInitiated) {
-                cleaner.remove(selected, from: currentWorkspaces)
+                cleaner.remove(selected, from: currentWorkspaces, mode: mode)
             }.value
-            isCleaning = false
             lastTrashedURLs = result.trashedURLs
             let containsHiddenFolders = result.trashedURLs.contains { $0.lastPathComponent.hasPrefix(".") }
-            if result.failed.isEmpty {
+            if mode == .deleteImmediately, result.failed.isEmpty {
+                try? await Task.sleep(for: .milliseconds(500))
+                refreshDiskSpace()
+                let after = availableDiskBytes ?? Self.diskSpaceSnapshot().available
+                let actuallyFreed = max(0, (after ?? before ?? 0) - (before ?? after ?? 0))
+                lastMessage = "Permanently deleted \(result.trashed.count) generated folder\(result.trashed.count == 1 ? "" : "s") · macOS free space increased by \(ByteFormatting.string(actuallyFreed))."
+            } else if mode == .deleteImmediately {
+                try? await Task.sleep(for: .milliseconds(500))
+                refreshDiskSpace()
+                let after = availableDiskBytes ?? Self.diskSpaceSnapshot().available
+                let actuallyFreed = max(0, (after ?? before ?? 0) - (before ?? after ?? 0))
+                lastMessage = "Permanently deleted \(result.trashed.count) generated folders; \(result.failed.count) failed · macOS free space increased by \(ByteFormatting.string(actuallyFreed))."
+            } else if result.failed.isEmpty {
                 let hiddenHint = containsHiddenFolders ? " Finder hides dot-folders; in Trash press ⇧⌘. to show them." : ""
-                lastMessage = "Moved \(result.trashed.count) folder\(result.trashed.count == 1 ? "" : "s") to Trash · up to \(ByteFormatting.string(result.reclaimedBytes)) pending.\(hiddenHint)"
+                lastMessage = "Moved \(result.trashed.count) folder\(result.trashed.count == 1 ? "" : "s") to Trash · no space is released until Trash is emptied.\(hiddenHint)"
             } else {
                 lastMessage = "Moved \(result.trashed.count) folders to Trash; \(result.failed.count) could not be moved."
             }
-            scan(preservingMessage: true)
+            isCleaning = false
+            if isScanning {
+                rescanWhenIdle = true
+            } else {
+                rescanWhenIdle = false
+                scan(preservingMessage: true)
+            }
         }
     }
 
@@ -311,6 +344,32 @@ final class AppModel: ObservableObject {
                 } else {
                     replaceGlobalCache(cache, state: .failed(error.localizedDescription))
                 }
+            }
+            cleaningGlobalCacheID = nil
+            isCleaning = false
+        }
+    }
+
+    func stopUVLockProcesses() {
+        guard !isCleaning else { return }
+        isCleaning = true
+        cleaningGlobalCacheID = "uv"
+        lastMessage = "Stopping uv processes…"
+        let processService = uvLockProcessService
+        let cacheService = globalCacheService
+        Task {
+            do {
+                let count = try await Task.detached(priority: .userInitiated) {
+                    try processService.stopHolders()
+                }.value
+                lastMessage = count == 0
+                    ? "No uv processes are holding the cache lock."
+                    : "Stopped \(count) uv process\(count == 1 ? "" : "es"). Their development servers and commands were terminated."
+            } catch {
+                lastMessage = "Could not stop uv processes: \(error.localizedDescription)"
+            }
+            if let refreshed = await Task.detached(priority: .utility, operation: { cacheService.inspect(id: "uv") }).value {
+                replaceGlobalCache(refreshed)
             }
             cleaningGlobalCacheID = nil
             isCleaning = false
