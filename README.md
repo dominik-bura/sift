@@ -35,6 +35,8 @@ If macOS shows **“Sift Not Opened”** for an older or locally built copy, you
 
 macOS saves Sift as an exception, so this is required only once for that installed copy. See [Apple's instructions for opening an unnotarized app](https://support.apple.com/en-us/102445).
 
+GitHub releases are explicitly labeled **Unsigned** when the repository has no Apple Developer ID and notarization credentials configured.
+
 Sift requires macOS 14 Sonoma or newer.
 
 ## Using Sift

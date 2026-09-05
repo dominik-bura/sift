@@ -26,7 +26,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, Node.js 24
 
-      - name: Require release signing credentials
+      - name: Determine release signing mode
         run: |
           required=(
             APPLE_CERTIFICATE_BASE64
@@ -42,12 +42,18 @@ jobs:
               missing+=("${name}")
             fi
           done
-          if (( ${#missing[@]} > 0 )); then
-            echo "::error::Public releases require Developer ID signing and notarization credentials. Missing: ${missing[*]}"
+          if (( ${#missing[@]} == ${#required[@]} )); then
+            echo "SIGNED_RELEASE=false" >> "${GITHUB_ENV}"
+            echo "::warning::Publishing an unsigned release because no Apple signing credentials are configured."
+          elif (( ${#missing[@]} > 0 )); then
+            echo "::error::Apple signing credentials are only partially configured. Missing: ${missing[*]}"
             exit 1
+          else
+            echo "SIGNED_RELEASE=true" >> "${GITHUB_ENV}"
           fi
 
       - name: Import Developer ID certificate
+        if: ${{ env.SIGNED_RELEASE == 'true' }}
         run: |
           certificate_path="${RUNNER_TEMP}/developer-id.p12"
           keychain_path="${RUNNER_TEMP}/sift-signing.keychain-db"
@@ -77,6 +83,7 @@ jobs:
         run: ./scripts/create-legacy-update-app.sh build/Sift.app build/DevSweep.app "${SIFT_CODESIGN_IDENTITY:--}"
 
       - name: Notarize signed apps
+        if: ${{ env.SIGNED_RELEASE == 'true' }}
         run: |
           ditto -c -k --keepParent build/Sift.app "${RUNNER_TEMP}/Sift-notarization.zip"
           xcrun notarytool submit "${RUNNER_TEMP}/Sift-notarization.zip" \
@@ -108,6 +115,7 @@ jobs:
           fi
 
       - name: Notarize disk image
+        if: ${{ env.SIGNED_RELEASE == 'true' }}
         env:
           VERSION: 0.1.${{ github.run_number }}
         run: |
@@ -119,12 +127,16 @@ jobs:
           xcrun stapler staple "dist/Sift-${VERSION}.dmg"
           xcrun stapler validate "dist/Sift-${VERSION}.dmg"
 
-      - name: Verify Gatekeeper acceptance
-        env:
-          VERSION: 0.1.${{ github.run_number }}
+      - name: Verify app signature integrity
         run: |
           codesign --verify --deep --strict --all-architectures --verbose=2 build/Sift.app
           codesign --verify --deep --strict --all-architectures --verbose=2 build/DevSweep.app
+
+      - name: Verify Gatekeeper acceptance
+        if: ${{ env.SIGNED_RELEASE == 'true' }}
+        env:
+          VERSION: 0.1.${{ github.run_number }}
+        run: |
           spctl --assess --type execute --verbose=2 build/Sift.app
           spctl --assess --type execute --verbose=2 build/DevSweep.app
           spctl --assess --type open --context context:primary-signature --verbose=2 "dist/Sift-${VERSION}.dmg"
@@ -145,8 +157,15 @@ jobs:
           if gh release view "v${VERSION}" >/dev/null 2>&1; then
             gh release upload "v${VERSION}" dist/* --clobber
           else
+            title="Sift ${VERSION}"
+            notes=()
+            if [[ "${SIGNED_RELEASE}" != "true" ]]; then
+              title="${title} (Unsigned)"
+              notes=(--notes "⚠️ This build is ad-hoc signed and not Apple-notarized. macOS may require approval in System Settings → Privacy & Security on first launch.")
+            fi
             gh release create "v${VERSION}" dist/* \
-              --title "Sift ${VERSION}" \
+              --title "${title}" \
               --generate-notes \
-              --target "${GITHUB_SHA}"
+              --target "${GITHUB_SHA}" \
+              "${notes[@]}"
           fi
