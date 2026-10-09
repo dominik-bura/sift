@@ -139,8 +139,8 @@ struct StorageOverviewView: View {
             }
             if path == StorageOverviewService.rootPath {
                 HStack {
-                    Button("Home folder") { navigation.append(NSHomeDirectory()); overview.scan(NSHomeDirectory()) }
-                    Button("App data") { let folder = NSHomeDirectory() + "/Library"; navigation.append(folder); overview.scan(folder) }
+                    Button("Home folder") { navigation.append(NSHomeDirectory()) }
+                    Button("App data") { navigation.append(NSHomeDirectory() + "/Library") }
                 }.controlSize(.small)
             }
             if overview.scanningPaths.contains(path) {
@@ -162,7 +162,6 @@ struct StorageOverviewView: View {
                         HStack(spacing: 10) {
                             Button {
                                 navigation.append(folder.path)
-                                overview.scan(folder.path)
                             } label: {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 3) {
@@ -214,12 +213,13 @@ struct StorageOverviewView: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             } else if !overview.scanningPaths.contains(path) {
+                Text("Scanning is optional. macOS may ask permission to read protected folders; you can deny access and see partial results. Normal cleanup does not require a full-disk scan.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Button("Measure this folder") { overview.scan(path, force: true) }
             }
             Text("Read-only view. Folder sizes include personal files and may share APFS blocks; they are not guaranteed cleanup savings.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
-        .onAppear { overview.scan(path) }
     }
 }
 

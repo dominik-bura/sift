@@ -23,7 +23,7 @@ Sift finds regenerable files across Git worktrees—such as `node_modules`, `.ne
 
 ## Storage, memory, and cleanup
 
-The **Storage** tab measures readable folders across the data volume, including hidden coding-agent directories, app data, projects, and virtual-machine files. Large scans can take several minutes and continue when the menu closes. Results are cached locally for six hours; refresh a folder to compare it with its previous snapshot. Permission-limited or timed-out scans are labeled explicitly. The difference between readable-folder totals and volume usage remains visible rather than being presented as reclaimable space.
+The **Storage** tab measures readable folders across the data volume, including hidden coding-agent directories, app data, projects, and virtual-machine files. Scans start only when you explicitly choose to measure or refresh a folder, not when you open the tab or navigate. macOS may request access to protected folders; denying access gives partial results and does not prevent normal cleanup. Large scans can take several minutes and continue when the menu closes. Results are cached locally for six hours; refresh a folder to compare it with its previous snapshot. Permission-limited or timed-out scans are labeled explicitly. The difference between readable-folder totals and volume usage remains visible rather than being presented as reclaimable space.
 
 Folder-attributed sizes can include shared APFS blocks and must not be interpreted as guaranteed savings. Global cache rows show **stored** size; Sift measures the observed macOS free-space change after cleanup. uv's physical-space reporting option is enabled only when the installed version supports it.
 
