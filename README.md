@@ -17,6 +17,29 @@ Sift finds regenerable files across Git worktrees—such as `node_modules`, `.ne
 - Supports global uv, pnpm, Bun, Yarn, npm, Go, and Homebrew caches
 - Runs entirely on your Mac with no analytics or telemetry
 - Includes built-in update checks from the app's Settings panel
+- Adds a read-only Storage view for the data volume, folder drill-down, Finder reveal, and local growth comparisons
+- Shows system swap and app process-group resident memory, with normal quit requests
+- Supports Pulumi plugin cache, Xcode DerivedData, selected app caches, and unavailable simulator cleanup
+
+## Storage, memory, and cleanup
+
+The **Storage** tab measures readable folders across the data volume, including hidden coding-agent directories, app data, projects, and virtual-machine files. Large scans can take several minutes and continue when the menu closes. Results are cached locally for six hours; refresh a folder to compare it with its previous snapshot. Permission-limited or timed-out scans are labeled explicitly. The difference between readable-folder totals and volume usage remains visible rather than being presented as reclaimable space.
+
+Folder-attributed sizes can include shared APFS blocks and must not be interpreted as guaranteed savings. Global cache rows show **stored** size; Sift measures the observed macOS free-space change after cleanup. uv's physical-space reporting option is enabled only when the installed version supports it.
+
+The **Memory** tab separates macOS-managed swap from persistent storage. Resident RAM groups include child processes and may count shared memory more than once. Quit requests are graceful, allowing apps to ask users to save work; Sift never offers to delete swap.
+
+The **Clean up** tab keeps generated-folder selections deselected by default. An age-based selection shortcut uses folder modification dates, not last-use dates, and requires review and the normal cleanup confirmation. There is no automatic deletion or history retention policy.
+
+Additional cleanup uses narrow boundaries:
+
+- Pulumi removes downloaded plugins via its CLI; required versions may download again. Infrastructure state and credentials remain excluded.
+- Xcode cleanup clears only default DerivedData. Archives, SDKs, and installed simulator runtimes remain excluded.
+- Dia, Codex, and Spark cleanup clears specific Library cache directories only. Known running apps must quit first. App support data, conversations, profiles, and worktrees are excluded.
+- Simulator cleanup uses `simctl delete unavailable`. It deletes unavailable device data permanently and preserves available devices. The displayed stored size includes the device directory, not just unavailable devices.
+- Pulumi plugins and simulator devices require individual confirmation and are excluded from **Clean all caches**.
+
+VM disks, personal files, downloads, and agent conversations are inspectable in Storage and Finder, but Sift does not delete them through these new cleanup actions. Storage snapshots contain local paths and sizes, remain on the Mac, and are never uploaded.
 
 ## Install
 

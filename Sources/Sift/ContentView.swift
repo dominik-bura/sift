@@ -1,11 +1,13 @@
 import SwiftUI
 
 struct ContentView: View {
+    private enum Section: String, CaseIterable { case storage = "Storage", cleanup = "Clean up", memory = "Memory" }
     @EnvironmentObject private var model: AppModel
     @State private var confirmation: CleanupConfirmation?
     @State private var showSettings = false
     @State private var expandedWorkspaceIDs = Set<String>()
     @State private var collapsedRepositoryIDs = Set<String>()
+    @State private var section: Section = .storage
 
     var body: some View {
         ZStack {
@@ -13,7 +15,14 @@ struct ContentView: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         summary
-                        if isInitialScan {
+                        Picker("Sift section", selection: $section) {
+                            ForEach(Section.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        }.pickerStyle(.segmented).padding(.bottom, 18)
+                        if section == .storage {
+                            StorageOverviewView(overview: model.storageOverview)
+                        } else if section == .memory {
+                            MemoryOverviewView(memory: model.memoryOverview)
+                        } else if isInitialScan {
                             loadingState
                         } else {
                             globalCachesSection
@@ -113,32 +122,38 @@ struct ContentView: View {
                     .baselineOffset(0.5)
                 Spacer()
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    if let lastSyncedAt = model.lastSyncedAt {
+                    if let lastSyncedAt = model.lastSyncedAt, section == .cleanup {
                         Text(
                             "Last synced \(lastSyncedAt.formatted(.dateTime.day().month(.abbreviated))) · \(lastSyncedAt.formatted(.dateTime.hour().minute()))"
                         )
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.tertiary)
-                    } else {
+                    } else if section == .cleanup {
                         Text("Not synced yet")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
 
-                    Button { model.scan() } label: {
-                        if model.isScanning { ProgressView().controlSize(.small) }
+                    Button {
+                        switch section {
+                        case .cleanup: model.scan()
+                        case .storage: model.storageOverview.scan(StorageOverviewService.rootPath, force: true)
+                        case .memory: model.memoryOverview.refresh()
+                        }
+                    } label: {
+                        if (section == .cleanup && model.isScanning) || (section == .storage && model.storageOverview.scanningPaths.contains(StorageOverviewService.rootPath)) || (section == .memory && model.memoryOverview.refreshing) { ProgressView().controlSize(.small) }
                         else {
                             Image(systemName: "arrow.clockwise")
                                 .font(.system(size: 15, weight: .regular))
                         }
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .disabled(model.isScanning || model.isCleaning)
+                    .disabled(model.isCleaning || (section == .cleanup && model.isScanning) || (section == .storage && model.storageOverview.scanningPaths.count >= 2) || (section == .memory && model.memoryOverview.refreshing))
                     .help("Scan again")
                 }
             }
 
-            if isInitialScan {
+            if section == .cleanup && isInitialScan {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Scanning developer storage")
                         .font(.title3.weight(.semibold))
@@ -150,9 +165,9 @@ struct ContentView: View {
             } else {
                 VStack(alignment: .leading, spacing: 9) {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text(ByteFormatting.string(model.totalReclaimableBytes))
+                        Text(section == .cleanup ? ByteFormatting.string(model.totalReclaimableBytes) : model.freeDiskSpace().map(ByteFormatting.string) ?? "—")
                             .font(.system(size: 32, weight: .bold, design: .rounded)).monospacedDigit()
-                        Text("developer data found").font(.headline).foregroundStyle(.secondary)
+                        Text(section == .cleanup ? "cleanup data found" : "available").font(.headline).foregroundStyle(.secondary)
                     }
                     GeometryReader { proxy in
                         ZStack(alignment: .leading) {
@@ -209,7 +224,7 @@ struct ContentView: View {
                     HStack {
                         Text("GLOBAL CACHES").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                         Spacer()
-                        Button("Clean all") { confirmation = .allGlobals }
+                        Button("Clean all caches") { confirmation = .allGlobals }
                             .buttonStyle(.plain)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(model.cleanableGlobalStorageCount == 0 ? Color.secondary : SiftTheme.accent)
@@ -250,7 +265,7 @@ struct ContentView: View {
                                             .lineLimit(1)
                                             .help(message)
                                     } else if cache.bytes > 0 {
-                                        Text("up to \(ByteFormatting.string(cache.bytes))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                        Text("\(ByteFormatting.string(cache.bytes)) stored").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                                         Button(cache.onlyPrunesUnusedData ? "Prune" : "Clean") { confirmation = .global(cache.id) }
                                             .disabled(model.isCleaning)
                                     } else {
@@ -313,6 +328,13 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .font(.caption.weight(.medium))
+                HStack {
+                    Button("Select folders older than 30 days") { model.selectOlderGeneratedFolders() }
+                        .buttonStyle(.plain).font(.caption).foregroundStyle(SiftTheme.accent)
+                    Spacer()
+                }
+                Text("Age uses the folder's modification date, not last use. Review selections before cleaning.")
+                    .font(.caption2).foregroundStyle(.tertiary)
                 Text("Worktree values are generated-folder sizes. Actual freed space is measured after permanent deletion.")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
@@ -623,7 +645,7 @@ struct ContentView: View {
         VStack(spacing: 6) {
             if let message = model.lastMessage {
                 HStack(spacing: 8) {
-                    Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2).help(message)
                     Spacer(minLength: 4)
                     if !model.lastTrashedURLs.isEmpty {
                         Button("Show in Trash") { model.showLastTrashedItems() }
@@ -656,6 +678,7 @@ struct ContentView: View {
                 }
                 .font(.caption.weight(.medium)).foregroundStyle(.secondary)
                 Spacer()
+                if section == .cleanup {
                 Button { confirmation = .folders } label: {
                     if isInitialScan {
                         HStack { ProgressView().controlSize(.small); Text("Scanning…") }.frame(minWidth: 170)
@@ -669,6 +692,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large)
                 .disabled(model.selectedCandidates.isEmpty || model.isCleaning || isInitialScan)
+                }
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
@@ -740,6 +764,9 @@ private enum CleanupConfirmation: Equatable {
         case .allGlobals:
             return "Docker unused images and build cache plus each installed package-manager cache will be cleaned sequentially. Active Docker images, containers, and volumes remain untouched. Active uv processes can prevent uv cleanup; Sift never bypasses uv's cache lock."
         case let .global(id):
+            if let cache = model.globalCaches.first(where: { $0.id == id }), id == "simulators" || id == "pulumi" || RegenerableCacheService.definitions.contains(where: { $0.id == id }) {
+                return "\(cache.detail). Cleanup is permanent. The displayed size is folder-attributed storage, not guaranteed freed space."
+            }
             if id == "uv" {
                 return "uv requires all active uv commands to stop before its cache can be cleared safely. Cached artifacts will be downloaded or rebuilt later; Sift never bypasses uv's cache lock."
             }

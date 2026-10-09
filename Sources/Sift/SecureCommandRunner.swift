@@ -109,11 +109,12 @@ enum TrustedExecutable {
             "/usr/bin/\(name)",
             "\(home)/.local/bin/\(name)",
             "\(home)/.cargo/bin/\(name)",
-            "\(home)/.bun/bin/\(name)"
+            "\(home)/.bun/bin/\(name)",
+            "\(home)/.pulumi/bin/\(name)"
         ]
         let allowedRoots = [
             "/opt/homebrew/", "/usr/local/", "/usr/bin/", "/Applications/",
-            "\(home)/.local/", "\(home)/.cargo/", "\(home)/.bun/"
+            "\(home)/.local/", "\(home)/.cargo/", "\(home)/.bun/", "\(home)/.pulumi/bin/"
         ]
 
         for path in candidates {

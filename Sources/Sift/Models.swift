@@ -115,6 +115,12 @@ struct GlobalCache: Identifiable, Equatable, Sendable {
         case available(bytes: Int64, path: String)
         case blocked(bytes: Int64, path: String, processCount: Int)
         case failed(String)
+        var path: String? {
+            switch self {
+            case let .available(_, path), let .blocked(_, path, _): return path
+            default: return nil
+            }
+        }
     }
 
     let id: String
@@ -130,8 +136,10 @@ struct GlobalCache: Identifiable, Equatable, Sendable {
     }
 
     var onlyPrunesUnusedData: Bool {
-        id == "pnpm" || id == "homebrew"
+        id == "pnpm" || id == "homebrew" || id == "simulators"
     }
+    // Provider plugins and unavailable simulator devices are explicit opt-ins.
+    var includedInCleanAll: Bool { id != "pulumi" && id != "simulators" }
 
     var reclaimableBytes: Int64 {
         onlyPrunesUnusedData ? 0 : bytes

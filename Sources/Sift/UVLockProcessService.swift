@@ -9,9 +9,10 @@ struct UVLockProcess: Equatable, Sendable {
 struct UVLockProcessService: Sendable {
     private let runner = SecureCommandRunner()
 
-    func holders() -> [UVLockProcess] {
-        let lockPath = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-            .appendingPathComponent(".cache/uv/.lock").path
+    func holders(cachePath: String? = nil) -> [UVLockProcess] {
+        let cacheURL = cachePath.map { URL(fileURLWithPath: $0) }
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".cache/uv")
+        let lockPath = cacheURL.appendingPathComponent(".lock").path
         guard FileManager.default.fileExists(atPath: lockPath) else { return [] }
 
         let result = runner.run(
@@ -24,8 +25,8 @@ struct UVLockProcessService: Sendable {
         return Self.parse(result.output)
     }
 
-    func stopHolders() throws -> Int {
-        let processes = holders()
+    func stopHolders(cachePath: String? = nil) throws -> Int {
+        let processes = holders(cachePath: cachePath)
         guard !processes.isEmpty else { return 0 }
 
         // Only signal processes that lsof identifies as `uv` and that currently
@@ -38,11 +39,11 @@ struct UVLockProcessService: Sendable {
 
         let deadline = Date().addingTimeInterval(2)
         while Date() < deadline {
-            if holders().isEmpty { return processes.count }
+            if holders(cachePath: cachePath).isEmpty { return processes.count }
             Thread.sleep(forTimeInterval: 0.1)
         }
 
-        for process in holders() where process.command == "uv" {
+        for process in holders(cachePath: cachePath) where process.command == "uv" {
             guard kill(process.pid, SIGKILL) == 0 || errno == ESRCH else {
                 throw UVLockProcessError.couldNotStop(process.pid)
             }

@@ -3,6 +3,7 @@ import Foundation
 struct GlobalCacheService: Sendable {
     private let runner = SecureCommandRunner()
     private let uvLockProcesses = UVLockProcessService()
+    private let regenerableCaches = RegenerableCacheService()
     private var fileManager: FileManager { .default }
 
     private struct Definition: Sendable {
@@ -25,20 +26,29 @@ struct GlobalCacheService: Sendable {
             Definition(id: "yarn", name: "Yarn cache", detail: "Clears the shared package archive cache", symbol: "shippingbox.circle.fill", executable: "yarn", fixedPath: { _ in nil }, pathArguments: ["cache", "dir"], cleanArguments: ["cache", "clean"]),
             Definition(id: "npm", name: "npm cache", detail: "Clears npm's self-healing content cache", symbol: "cube.fill", executable: "npm", fixedPath: { _ in nil }, pathArguments: ["config", "get", "cache"], cleanArguments: ["cache", "clean", "--force"]),
             Definition(id: "go", name: "Go build cache", detail: "Clears reproducible build and test results", symbol: "hammer.fill", executable: "go", fixedPath: { _ in nil }, pathArguments: ["env", "GOCACHE"], cleanArguments: ["clean", "-cache", "-testcache"]),
-            Definition(id: "homebrew", name: "Homebrew", detail: "Prunes stale downloads and old formula versions", symbol: "mug.fill", executable: "brew", fixedPath: { _ in nil }, pathArguments: ["--cache"], cleanArguments: ["cleanup"])
+            Definition(id: "homebrew", name: "Homebrew", detail: "Prunes stale downloads and old formula versions", symbol: "mug.fill", executable: "brew", fixedPath: { _ in nil }, pathArguments: ["--cache"], cleanArguments: ["cleanup"]),
+            Definition(id: "pulumi", name: "Pulumi plugins", detail: "Clears downloaded provider plugins; required versions download again", symbol: "shippingbox.fill", executable: "pulumi", fixedPath: { _ in "\(ProcessInfo.processInfo.environment["PULUMI_HOME"] ?? home + "/.pulumi")/plugins" }, pathArguments: nil, cleanArguments: ["plugin", "rm", "--all", "--yes"]),
+            Definition(id: "simulators", name: "Unavailable simulators", detail: "Removes devices whose runtimes are no longer installed; device data is deleted", symbol: "iphone", executable: "xcrun", fixedPath: { _ in "\(home)/Library/Developer/CoreSimulator/Devices" }, pathArguments: nil, cleanArguments: ["simctl", "delete", "unavailable"])
         ]
     }
 
-    func inspectAll() -> [GlobalCache] {
-        definitions.compactMap(inspect)
+    func inspectAll(onResult: @Sendable (GlobalCache) -> Void = { _ in }) -> [GlobalCache] {
+        var results: [GlobalCache] = []
+        for definition in definitions {
+            if let cache = inspect(definition) { results.append(cache); onResult(cache) }
+        }
+        for definition in RegenerableCacheService.definitions {
+            if let cache = regenerableCaches.inspect(id: definition.id) { results.append(cache); onResult(cache) }
+        }
+        return results
     }
 
     func inspect(id: String) -> GlobalCache? {
-        definitions.first(where: { $0.id == id }).flatMap(inspect)
+        definitions.first(where: { $0.id == id }).flatMap(inspect) ?? regenerableCaches.inspect(id: id)
     }
 
     func installedPlaceholders() -> [GlobalCache] {
-        definitions.compactMap { definition in
+        let tools = definitions.compactMap { definition -> GlobalCache? in
             guard TrustedExecutable.find(definition.executable) != nil else { return nil }
             return GlobalCache(
                 id: definition.id,
@@ -48,9 +58,21 @@ struct GlobalCacheService: Sendable {
                 state: .checking
             )
         }
+        let local = RegenerableCacheService.definitions.compactMap { definition -> GlobalCache? in
+            guard definition.relativePaths.contains(where: { fileManager.fileExists(atPath: NSHomeDirectory() + "/" + $0) }) else { return nil }
+            return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: "app.badge", state: .checking)
+        }
+        return tools + local
     }
 
     func clean(id: String) throws {
+        if id == "uv", ProcessInfo.processInfo.environment["UV_LINK_MODE"] == "symlink" {
+            throw GlobalCacheError.failed("uv symlink mode depends on cache files. Change the link mode and recreate environments before clearing this cache.")
+        }
+        if RegenerableCacheService.definitions.contains(where: { $0.id == id }) {
+            try regenerableCaches.clean(id: id)
+            return
+        }
         guard let definition = definitions.first(where: { $0.id == id }),
               let executable = TrustedExecutable.find(definition.executable) else {
             throw GlobalCacheError.unavailable
@@ -58,20 +80,25 @@ struct GlobalCacheService: Sendable {
         guard let current = inspect(definition), case .available = current.state else {
             throw GlobalCacheError.failed("The cache location could not be safely verified")
         }
+        var cleanupArguments = definition.cleanArguments
+        if definition.id == "uv" { cleanupArguments = uvCleanupArguments(executable) }
+        if definition.id == "simulators", let path = current.state.path {
+            cleanupArguments = ["simctl", "--set", path, "delete", "unavailable"]
+        }
         let result: CommandResult
         if definition.id == "bun" {
-            result = try runBunCacheCleanup(executable, arguments: definition.cleanArguments)
+            result = try runBunCacheCleanup(executable, arguments: cleanupArguments)
         } else if definition.id == "pnpm" {
             result = try runInTemporaryDirectory(
                 named: "Sift-pnpm",
                 executable: executable,
-                arguments: definition.cleanArguments,
+                arguments: cleanupArguments,
                 timeout: 120
             )
         } else {
             result = runner.run(
                 executable,
-                arguments: definition.cleanArguments,
+                arguments: cleanupArguments,
                 timeout: definition.id == "homebrew" ? 300 : 120,
                 environmentOverrides: definition.id == "uv" ? ["UV_LOCK_TIMEOUT": "0"] : [:]
             )
@@ -79,6 +106,18 @@ struct GlobalCacheService: Sendable {
         guard result.exitCode == 0 else {
             throw GlobalCacheError.failed(Self.safeError(result.error))
         }
+    }
+
+    private func uvCleanupArguments(_ executable: URL) -> [String] {
+        let help = runner.run(executable, arguments: ["cache", "clean", "--help"], timeout: 10)
+        // Probe the specific feature using a read-only cache-directory query.
+        // Older uv versions reject the feature even if the global flag exists.
+        if help.output.contains("--preview-features"),
+           let probe = try? runInTemporaryDirectory(named: "Sift-uv-feature", executable: executable,
+                 arguments: ["cache", "dir", "--preview-features", "cache-physical-space"], timeout: 10), probe.exitCode == 0 {
+            return ["cache", "clean", "--preview-features", "cache-physical-space"]
+        }
+        return ["cache", "clean"]
     }
 
     private func runBunCacheCleanup(_ executable: URL, arguments: [String]) throws -> CommandResult {
@@ -142,9 +181,12 @@ struct GlobalCacheService: Sendable {
         guard let validated = validatedCachePath(path) else {
             return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: definition.symbol, state: .failed("Cache location is outside your home folder"))
         }
-        let bytes = allocatedSize(of: validated)
+        guard let bytes = allocatedSize(of: validated) else {
+            return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: definition.symbol,
+                               state: .failed("Could not measure cache; check permissions"))
+        }
         if definition.id == "uv" {
-            let holders = uvLockProcesses.holders()
+            let holders = uvLockProcesses.holders(cachePath: validated.path)
             if !holders.isEmpty {
                 return GlobalCache(
                     id: definition.id,
@@ -167,21 +209,23 @@ struct GlobalCacheService: Sendable {
         return url
     }
 
-    private func allocatedSize(of directory: URL) -> Int64 {
+    private func allocatedSize(of directory: URL) -> Int64? {
+        if !fileManager.fileExists(atPath: directory.path) { return 0 }
         let keys: Set<URLResourceKey> = [
             .isRegularFileKey,
             .fileAllocatedSizeKey,
             .totalFileAllocatedSizeKey,
             .mayShareFileContentKey
         ]
-        guard let enumerator = fileManager.enumerator(at: directory, includingPropertiesForKeys: Array(keys), options: [.skipsPackageDescendants]) else { return 0 }
+        var failed = false
+        guard let enumerator = fileManager.enumerator(at: directory, includingPropertiesForKeys: Array(keys), options: [], errorHandler: { _, _ in failed = true; return true }) else { return nil }
         var total: Int64 = 0
         while let file = enumerator.nextObject() as? URL {
-            guard let values = try? file.resourceValues(forKeys: keys), values.isRegularFile == true else { continue }
-            guard values.mayShareFileContent != true else { continue }
+            guard let values = try? file.resourceValues(forKeys: keys) else { failed = true; continue }
+            guard values.isRegularFile == true else { continue }
             total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
         }
-        return total
+        return failed ? nil : total
     }
 
     private static func safeError(_ raw: String) -> String {

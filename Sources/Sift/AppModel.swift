@@ -3,6 +3,8 @@ import Foundation
 
 @MainActor
 final class AppModel: ObservableObject {
+    let storageOverview = StorageOverviewModel()
+    let memoryOverview = MemoryOverviewModel()
     @Published var workspaces: [Workspace] = []
     @Published var dockerState: DockerState = .checking
     @Published var globalCaches: [GlobalCache] = []
@@ -38,6 +40,7 @@ final class AppModel: ObservableObject {
     private let defaultsKey = "searchRoots"
     private let lastSyncedKey = "lastSuccessfulScanDate"
     private var rescanWhenIdle = false
+    private var globalCacheRevision = 0
 
     init() {
         deletesImmediately = UserDefaults.standard.bool(forKey: "deleteGeneratedFoldersImmediately")
@@ -75,6 +78,7 @@ final class AppModel: ObservableObject {
     var selectedConservativeBytes: Int64 { selectedCandidates.reduce(0) { $0 + $1.conservativeBytes } }
     var cleanableGlobalCaches: [GlobalCache] {
         globalCaches.filter { cache in
+            guard cache.includedInCleanAll else { return false }
             if case let .available(bytes, _) = cache.state { return bytes > 0 }
             return false
         }
@@ -84,6 +88,10 @@ final class AppModel: ObservableObject {
     }
     var applicationName: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Sift"
+    }
+    func selectOlderGeneratedFolders(days: Int = 30) {
+        let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
+        selectedCandidateIDs = Set(candidates.filter { ($0.modificationDate ?? .distantFuture) < cutoff }.map(\.id))
     }
     var versionLabel: String {
         if Bundle.main.object(forInfoDictionaryKey: "SiftBuildChannel") as? String == "development" {
@@ -129,12 +137,23 @@ final class AppModel: ObservableObject {
         let scanner = scanner
         let docker = docker
         let globalCacheService = globalCacheService
+        let cacheRevision = globalCacheRevision
 
         Task {
             if !inBackground { dockerState = .checking }
 
             async let refreshedDockerState: DockerState = Task.detached(priority: .utility) { docker.status() }.value
-            async let refreshedGlobalCaches: [GlobalCache] = Task.detached(priority: .utility) { globalCacheService.inspectAll() }.value
+            let globalRefresh = Task {
+                let refreshed = await Task.detached(priority: .utility) {
+                    globalCacheService.inspectAll { cache in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.globalCacheRevision == cacheRevision, !self.isCleaning else { return }
+                            self.replaceGlobalCache(cache)
+                        }
+                    }
+                }.value
+                if globalCacheRevision == cacheRevision, !isCleaning { globalCaches = refreshed.sorted { $0.bytes > $1.bytes } }
+            }
 
             let knownRoots = roots.filter(scanner.usesShallowDiscovery)
             let generalRoots = roots.filter { !scanner.usesShallowDiscovery(for: $0) }
@@ -171,7 +190,7 @@ final class AppModel: ObservableObject {
             selectedCandidateIDs.formIntersection(refreshed.flatMap(\.candidates).map(\.id))
             scanCache.save(refreshed)
             dockerState = await refreshedDockerState
-            globalCaches = await refreshedGlobalCaches.sorted { $0.bytes > $1.bytes }
+            await globalRefresh.value
             let completedAt = Date()
             lastSyncedAt = completedAt
             UserDefaults.standard.set(completedAt, forKey: lastSyncedKey)
@@ -313,6 +332,7 @@ final class AppModel: ObservableObject {
 
     func cleanGlobalCache(_ cache: GlobalCache) {
         guard !isCleaning else { return }
+        globalCacheRevision += 1
         isCleaning = true
         cleaningGlobalCacheID = cache.id
         lastMessage = "Cleaning \(cache.name)…"
@@ -335,7 +355,9 @@ final class AppModel: ObservableObject {
                         ? "\(cache.name) \(verb) · estimate dropped by \(ByteFormatting.string(removedFromCache)); macOS free space increased by \(ByteFormatting.string(actuallyFreed))."
                         : "\(cache.name) \(verb) · estimate dropped by \(ByteFormatting.string(removedFromCache)); macOS reported no immediate free-space change."
                 } else {
-                    lastMessage = "\(cache.name) cleanup completed; no additional cache data was removed."
+                    lastMessage = actuallyFreed > 0
+                        ? "\(cache.name) cleanup completed; macOS free space increased by \(ByteFormatting.string(actuallyFreed))."
+                        : "\(cache.name) cleanup completed; stored size is unchanged and macOS reported no immediate free-space increase. Shared data or freshly generated cache files can explain this."
                 }
             } catch {
                 lastMessage = "\(cache.name) cleanup failed: \(error.localizedDescription)"
@@ -352,15 +374,19 @@ final class AppModel: ObservableObject {
 
     func stopUVLockProcesses() {
         guard !isCleaning else { return }
+        globalCacheRevision += 1
         isCleaning = true
         cleaningGlobalCacheID = "uv"
         lastMessage = "Stopping uv processes…"
         let processService = uvLockProcessService
         let cacheService = globalCacheService
+        let uvPath: String?
+        if let cache = globalCaches.first(where: { $0.id == "uv" }), case let .blocked(_, path, _) = cache.state { uvPath = path }
+        else { uvPath = nil }
         Task {
             do {
                 let count = try await Task.detached(priority: .userInitiated) {
-                    try processService.stopHolders()
+                    try processService.stopHolders(cachePath: uvPath)
                 }.value
                 lastMessage = count == 0
                     ? "No uv processes are holding the cache lock."
@@ -380,6 +406,7 @@ final class AppModel: ObservableObject {
         let caches = cleanableGlobalCaches
         let cleansDocker = dockerState.reclaimableBytes > 0
         guard (!caches.isEmpty || cleansDocker), !isCleaning else { return }
+        globalCacheRevision += 1
         isCleaning = true
         lastMessage = "Cleaning Docker and global caches…"
         let service = globalCacheService
@@ -389,6 +416,7 @@ final class AppModel: ObservableObject {
         Task {
             var succeeded = 0
             var failed = 0
+            var failedNames: [String] = []
             var estimateDrop: Int64 = 0
 
             if cleansDocker {
@@ -402,6 +430,7 @@ final class AppModel: ObservableObject {
                     succeeded += 1
                 } catch {
                     failed += 1
+                    failedNames.append("Docker")
                     dockerState = await Task.detached(priority: .utility) { docker.status() }.value
                 }
                 isCleaningDocker = false
@@ -420,6 +449,7 @@ final class AppModel: ObservableObject {
                     succeeded += 1
                 } catch {
                     failed += 1
+                    failedNames.append(cache.name)
                     if let refreshed = await Task.detached(priority: .utility, operation: { service.inspect(id: cache.id) }).value {
                         replaceGlobalCache(refreshed)
                     } else {
@@ -432,7 +462,7 @@ final class AppModel: ObservableObject {
             try? await Task.sleep(for: .milliseconds(300))
             refreshDiskSpace()
             let freeSpaceIncrease = max(0, (availableDiskBytes ?? before ?? 0) - (before ?? availableDiskBytes ?? 0))
-            let failureText = failed > 0 ? "; \(failed) failed" : ""
+            let failureText = failed > 0 ? "; \(failed) failed (\(failedNames.joined(separator: ", ")))" : ""
             let diskText = freeSpaceIncrease > 0
                 ? "macOS free space increased by \(ByteFormatting.string(freeSpaceIncrease))"
                 : "macOS reported no immediate free-space change"
@@ -442,7 +472,7 @@ final class AppModel: ObservableObject {
     }
 
     private func replaceGlobalCache(_ cache: GlobalCache) {
-        guard let index = globalCaches.firstIndex(where: { $0.id == cache.id }) else { return }
+        guard let index = globalCaches.firstIndex(where: { $0.id == cache.id }) else { globalCaches.append(cache); return }
         globalCaches[index] = cache
     }
 
