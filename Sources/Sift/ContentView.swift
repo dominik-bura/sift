@@ -7,7 +7,7 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var expandedWorkspaceIDs = Set<String>()
     @State private var collapsedRepositoryIDs = Set<String>()
-    @State private var section: Section = .storage
+    @State private var section: Section = .cleanup
 
     var body: some View {
         ZStack {
@@ -17,7 +17,12 @@ struct ContentView: View {
                         summary
                         Picker("Sift section", selection: $section) {
                             ForEach(Section.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                        }.pickerStyle(.segmented).padding(.bottom, 18)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity)
+                        .padding(.bottom, 18)
                         if section == .storage {
                             StorageOverviewView(overview: model.storageOverview)
                         } else if section == .memory {
