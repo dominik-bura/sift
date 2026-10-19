@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
-    private enum Section: String, CaseIterable { case storage = "Storage", cleanup = "Clean up", memory = "Memory" }
+    private enum Section: String, CaseIterable { case cleanup = "Clean up", storage = "Storage", memory = "Memory" }
     @EnvironmentObject private var model: AppModel
     @State private var confirmation: CleanupConfirmation?
     @State private var showSettings = false
@@ -15,12 +15,13 @@ struct ContentView: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         summary
-                        Picker("Sift section", selection: $section) {
-                            ForEach(Section.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .controlSize(.large)
+                        FullWidthSegmentedControl(
+                            labels: Section.allCases.map(\.rawValue),
+                            selection: Binding(
+                                get: { Section.allCases.firstIndex(of: section) ?? 0 },
+                                set: { section = Section.allCases[$0] }
+                            )
+                        )
                         .frame(maxWidth: .infinity)
                         .padding(.bottom, 18)
                         if section == .storage {
