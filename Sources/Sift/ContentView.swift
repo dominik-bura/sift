@@ -1,44 +1,67 @@
 import SwiftUI
 
 struct ContentView: View {
+    var applicationIcon: NSImage? = nil
     private enum Section: String, CaseIterable { case cleanup = "Clean up", storage = "Storage", memory = "Memory" }
     @EnvironmentObject private var model: AppModel
+    @Environment(\.colorScheme) private var colorScheme
     @State private var confirmation: CleanupConfirmation?
     @State private var showSettings = false
     @State private var expandedWorkspaceIDs = Set<String>()
     @State private var collapsedRepositoryIDs = Set<String>()
     @State private var section: Section = .cleanup
+    @State private var cleanupReviewTarget: StorageCleanupTarget?
 
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
+                appHeader
+                sectionPicker
+                ScrollViewReader { scroll in
                 ScrollView {
                     VStack(spacing: 0) {
                         summary
-                        FullWidthSegmentedControl(
-                            labels: Section.allCases.map(\.rawValue),
-                            selection: Binding(
-                                get: { Section.allCases.firstIndex(of: section) ?? 0 },
-                                set: { section = Section.allCases[$0] }
-                            )
-                        )
-                        .frame(maxWidth: .infinity)
-                        .padding(.bottom, 18)
                         if section == .storage {
-                            StorageOverviewView(overview: model.storageOverview)
+                            StorageExplorerView(overview: model.storageOverview, onReviewCleanup: reviewCleanup)
+                            DisclosureGroup("Free-space history") {
+                                DiskSpaceHistoryView(samples: model.diskHistory.samples).padding(.top, 8)
+                            }.font(.caption).padding(.top, 20)
                         } else if section == .memory {
                             MemoryOverviewView(memory: model.memoryOverview)
-                        } else if isInitialScan {
-                            loadingState
                         } else {
-                            globalCachesSection
-                            worktreesSection
+                            if let target = cleanupReviewTarget {
+                                HStack(alignment: .top) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("Reviewing \(target.name)").font(.caption.weight(.semibold))
+                                        Text(target.path).font(.caption2).lineLimit(2).truncationMode(.middle)
+                                        Text(target.scopeDescription).font(.caption2)
+                                        Text("Existing selections unchanged; nothing added automatically.").font(.caption2)
+                                    }
+                                    Spacer()
+                                    Button { cleanupReviewTarget = nil } label: { Image(systemName: "xmark") }
+                                        .buttonStyle(.plain).accessibilityLabel("Dismiss cleanup review")
+                                }.foregroundStyle(SiftChartStyle.secondaryText).padding(12).siftStorageSurface().padding(.bottom, 14)
+                            }
+                            cleanupDashboard
+                            if isInitialScan { scanProgress } else { worktreesSection }
                         }
                     }
                     .padding(.horizontal, 18)
                     .padding(.bottom, 18)
                 }
                 .scrollIndicators(.hidden)
+                .onChange(of: cleanupReviewTarget) { _, target in
+                    guard let target else { return }
+                    // Let the destination's expanded category/workspace finish
+                    // its layout before resolving the scroll anchor.
+                    DispatchQueue.main.async {
+                    switch target.kind {
+                    case let .cache(id): scroll.scrollTo("cache-" + id, anchor: .center)
+                    case let .workspace(id): scroll.scrollTo("workspace-" + id, anchor: .center)
+                    }
+                    }
+                }
+                }
                 footer
             }
 
@@ -53,6 +76,9 @@ struct ContentView: View {
             }
         }
         .frame(width: 460, height: 660)
+        // Keep the native translucent window, with a darker content bed so
+        // nested glass doesn't turn the whole panel into a silver-gray plate.
+        .background(colorScheme == .dark ? Color.black.opacity(0.28) : Color.white.opacity(0.08))
         .tint(SiftTheme.accent)
         .onAppear {
             model.refreshDiskSpace()
@@ -66,6 +92,9 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.14), value: confirmation)
         .animation(.easeInOut(duration: 0.14), value: showSettings)
+        .onChange(of: section) { _, section in
+            if section != .cleanup { cleanupReviewTarget = nil }
+        }
     }
 
     private func confirmationOverlay(_ kind: CleanupConfirmation) -> some View {
@@ -79,7 +108,7 @@ struct ContentView: View {
                         .font(.headline)
                 }
                 Text(kind.message(model: model))
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .font(.callout).foregroundStyle(SiftChartStyle.secondaryText).fixedSize(horizontal: false, vertical: true)
                 VStack(spacing: 8) {
                     Button {
                         confirmation = nil
@@ -102,7 +131,7 @@ struct ContentView: View {
                     Button("Cancel") { confirmation = nil }
                         .buttonStyle(.plain)
                         .font(.callout.weight(.medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(SiftChartStyle.secondaryText)
                         .padding(.vertical, 4)
                         .frame(maxWidth: .infinity)
                 }
@@ -114,209 +143,119 @@ struct ContentView: View {
         .onExitCommand { confirmation = nil }
     }
 
-    private var summary: some View {
-        VStack(alignment: .leading, spacing: 15) {
-            HStack(spacing: 10) {
-                Image(nsImage: SiftAssets.applicationIcon)
-                    .resizable()
-                    .scaledToFit()
-                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .frame(width: 24, height: 24)
-                Text(model.applicationName)
-                    .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    .tracking(-0.25)
-                    .baselineOffset(0.5)
+    private var appHeader: some View {
+        HStack(spacing: 10) {
+            Image(nsImage: applicationIcon ?? SiftAssets.applicationIcon)
+                .resizable()
+                .scaledToFit()
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .frame(width: 24, height: 24)
+            Text(model.applicationName)
+                .font(.system(size: 16, weight: .semibold))
+                .tracking(-0.25)
+                .baselineOffset(0.5)
+            Spacer()
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if let lastSyncedAt = model.lastSyncedAt, section == .cleanup {
+                    Text(
+                        "Last synced \(lastSyncedAt.formatted(.dateTime.day().month(.abbreviated))) · \(lastSyncedAt.formatted(.dateTime.hour().minute()))"
+                    )
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(SiftChartStyle.mutedText)
+                } else if section == .cleanup {
+                    Text("Not synced yet")
+                        .font(.caption2)
+                        .foregroundStyle(SiftChartStyle.mutedText)
+                }
+
+                if section == .storage {
+                    StorageExplorerRefreshButton(overview: model.storageOverview, disabled: model.isCleaning)
+                } else {
+                Button {
+                    switch section {
+                    case .cleanup: model.scan()
+                    case .storage: break // The scoped Storage button observes its own model.
+                    case .memory: model.memoryOverview.refresh()
+                    }
+                } label: {
+                    if (section == .cleanup && model.isScanning) || (section == .memory && model.memoryOverview.refreshing) { ProgressView().controlSize(.small) }
+                    else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 15, weight: .regular))
+                    }
+                }
+                .buttonStyle(.plain).foregroundStyle(SiftChartStyle.secondaryText)
+                .disabled(model.isCleaning || (section == .cleanup && model.isScanning) || (section == .memory && model.memoryOverview.refreshing))
+                .help("Scan again")
+                }
+            }
+        }
+        .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 12)
+    }
+
+    private var sectionPicker: some View {
+        FullWidthSegmentedControl(
+            labels: Section.allCases.map(\.rawValue),
+            selection: Binding(
+                get: { Section.allCases.firstIndex(of: section) ?? 0 },
+                set: { section = Section.allCases[$0] }
+            )
+        ).frame(maxWidth: .infinity).padding(.horizontal, 18).padding(.bottom, 14)
+    }
+
+    @ViewBuilder private var summary: some View {
+        if section == .memory {
+            MemorySummaryView(memory: model.memoryOverview)
+        } else {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(model.freeDiskSpace().map(ByteFormatting.string) ?? "—")
+                    .font(.system(size: 27, weight: .semibold)).monospacedDigit().tracking(-0.6)
+                Text("free on this Mac").font(.callout).foregroundStyle(SiftChartStyle.secondaryText)
                 Spacer()
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    if let lastSyncedAt = model.lastSyncedAt, section == .cleanup {
-                        Text(
-                            "Last synced \(lastSyncedAt.formatted(.dateTime.day().month(.abbreviated))) · \(lastSyncedAt.formatted(.dateTime.hour().minute()))"
-                        )
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                    } else if section == .cleanup {
-                        Text("Not synced yet")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-
-                    Button {
-                        switch section {
-                        case .cleanup: model.scan()
-                        case .storage: model.storageOverview.scan(StorageOverviewService.rootPath, force: true)
-                        case .memory: model.memoryOverview.refresh()
-                        }
-                    } label: {
-                        if (section == .cleanup && model.isScanning) || (section == .storage && model.storageOverview.scanningPaths.contains(StorageOverviewService.rootPath)) || (section == .memory && model.memoryOverview.refreshing) { ProgressView().controlSize(.small) }
-                        else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 15, weight: .regular))
-                        }
-                    }
-                    .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .disabled(model.isCleaning || (section == .cleanup && model.isScanning) || (section == .storage && model.storageOverview.scanningPaths.count >= 2) || (section == .memory && model.memoryOverview.refreshing))
-                    .help("Scan again")
+                if model.freeDiskSpace() != nil && storageFreeFraction < 0.05 {
+                    Text("Low space").font(.caption2.weight(.medium)).foregroundStyle(.orange)
                 }
             }
-
-            if section == .cleanup && isInitialScan {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Scanning developer storage")
-                        .font(.title3.weight(.semibold))
-                    Text("Finding worktrees and measuring generated folders")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.top, 3)
-            } else {
-                VStack(alignment: .leading, spacing: 9) {
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text(section == .cleanup ? ByteFormatting.string(model.totalReclaimableBytes) : model.freeDiskSpace().map(ByteFormatting.string) ?? "—")
-                            .font(.system(size: 32, weight: .bold, design: .rounded)).monospacedDigit()
-                        Text(section == .cleanup ? "cleanup data found" : "available").font(.headline).foregroundStyle(.secondary)
-                    }
-                    GeometryReader { proxy in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(.quaternary)
-                            Capsule().fill(SiftTheme.brandGradient)
-                                .frame(width: proxy.size.width * storageFreeFraction)
-                        }
-                    }
-                    .frame(height: 7)
-                    HStack {
-                        Text(freeSpaceText).foregroundStyle(.secondary)
-                        Spacer()
-                        if let capacity = model.diskCapacity(), let free = model.freeDiskSpace() {
-                            Text("\(ByteFormatting.string(max(0, capacity - free))) used")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .font(.caption.monospacedDigit())
+            if let capacity = model.diskCapacity(), let free = model.freeDiskSpace() {
+                Text("\(ByteFormatting.string(max(0, capacity - free))) used of \(ByteFormatting.string(capacity))")
+                    .font(.caption.monospacedDigit()).foregroundStyle(SiftChartStyle.mutedText)
+                if section != .cleanup {
+                    StorageBlockBar(fraction: 1 - storageFreeFraction, cells: 48).frame(height: 8)
                 }
             }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 16)
         }
-        .padding(.top, 16).padding(.bottom, 18)
     }
 
-    private var loadingState: some View {
-        VStack(spacing: 18) {
-            ZStack {
-                Circle().fill(Color.accentColor.opacity(0.12))
-                ProgressView().controlSize(.regular)
-            }
-            .frame(width: 52, height: 52)
 
-            VStack(spacing: 5) {
-                Text("Looking for reclaimable space…").font(.headline)
-                Text("Sift is checking Git worktrees, generated dependencies, build output, and Docker images.")
-                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    .frame(maxWidth: 310)
-            }
-
-            VStack(spacing: 9) {
-                LoadingRow(width: 0.78)
-                LoadingRow(width: 0.58)
-                LoadingRow(width: 0.69)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 44)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Scanning worktrees and generated folders")
+    private var cleanupDashboard: some View {
+        CleanupDashboardView(
+            inventory: CleanupInventory(worktreeBytes: model.workspaces.reduce(0) { $0 + $1.reclaimableBytes },
+                                        caches: model.globalCaches, docker: model.dockerState, worktreesUnmeasured: isInitialScan),
+            observation: model.lastCleanupObservation,
+            cleaningID: model.cleaningGlobalCacheID, cleaningDocker: model.isCleaningDocker,
+            isCleaning: model.isCleaning, eligibleCount: model.cleanableGlobalStorageCount,
+            onClean: { confirmation = .global($0) },
+            onDocker: { confirmation = .docker },
+            onCleanEligible: { confirmation = .allGlobals },
+            onStopUV: { confirmation = .stopUVProcesses($0) },
+            reviewCacheID: reviewedCacheID
+        )
     }
 
-    private var globalCachesSection: some View {
-        VStack(alignment: .leading, spacing: 9) {
-                    HStack {
-                        Text("GLOBAL CACHES").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Clean all caches") { confirmation = .allGlobals }
-                            .buttonStyle(.plain)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(model.cleanableGlobalStorageCount == 0 ? Color.secondary : SiftTheme.accent)
-                            .disabled(model.cleanableGlobalStorageCount == 0 || model.isCleaning)
-                    }
-                    Panel(padding: 0) {
-                        VStack(spacing: 0) {
-                            dockerCacheRow
-                            ForEach(Array(model.globalCaches.enumerated()), id: \.element.id) { index, cache in
-                                Divider().padding(.leading, 52)
-                                HStack(spacing: 11) {
-                                    Image(systemName: cache.symbolName).foregroundStyle(SiftTheme.accent).frame(width: 25)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(cache.name).font(.callout.weight(.semibold))
-                                        if case let .available(_, path) = cache.state {
-                                            Text(path).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
-                                        } else if case let .blocked(_, _, processCount) = cache.state {
-                                            Text("\(processCount) running uv command\(processCount == 1 ? " is" : "s are") preventing cache cleanup")
-                                                .font(.caption2).foregroundStyle(.orange).lineLimit(1)
-                                        }
-                                    }
-                                    Spacer(minLength: 6)
-                                    if model.cleaningGlobalCacheID == cache.id || cache.state == .checking {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                            .tint(SiftTheme.accent)
-                                            .accessibilityLabel(model.cleaningGlobalCacheID == cache.id ? "Cleaning \(cache.name)" : "Measuring \(cache.name)")
-                                    } else if case let .blocked(bytes, _, processCount) = cache.state {
-                                        Text(ByteFormatting.string(bytes))
-                                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                                        Button("Stop uv") { confirmation = .stopUVProcesses(processCount) }
-                                            .disabled(model.isCleaning)
-                                            .help("Stop the uv commands so the cache can be cleaned")
-                                    } else if case let .failed(message) = cache.state {
-                                        Text(message)
-                                            .font(.caption2)
-                                            .foregroundStyle(.red)
-                                            .lineLimit(1)
-                                            .help(message)
-                                    } else if cache.bytes > 0 {
-                                        Text("\(ByteFormatting.string(cache.bytes)) stored").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                                        Button(cache.onlyPrunesUnusedData ? "Prune" : "Clean") { confirmation = .global(cache.id) }
-                                            .disabled(model.isCleaning)
-                                    } else {
-                                        Text("Empty").font(.caption).foregroundStyle(.tertiary)
-                                    }
-                                }
-                                .padding(.horizontal, 13).padding(.vertical, 10)
-                            }
-                        }
-                    }
-                    Text("Sizes are attributed to these folders. APFS clones may cause the space actually released to be smaller.")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                }
-                .padding(.bottom, 20)
+    private var reviewedCacheID: String? {
+        if case let .cache(id) = cleanupReviewTarget?.kind { return id }
+        return nil
     }
 
-    private var dockerCacheRow: some View {
-        HStack(spacing: 11) {
-            Image(systemName: "shippingbox.fill").foregroundStyle(SiftTheme.accent).frame(width: 25)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Docker storage").font(.callout.weight(.semibold))
-                switch model.dockerState {
-                case .checking:
-                    EmptyView()
-                case let .unavailable(message):
-                    Text(message).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
-                case let .available(_, detail):
-                    Text(detail).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
-                }
-            }
-            Spacer(minLength: 6)
-            if model.isCleaningDocker || model.dockerState == .checking {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(SiftTheme.accent)
-                    .accessibilityLabel(model.isCleaningDocker ? "Cleaning Docker storage" : "Measuring Docker storage")
-            } else if case let .available(bytes, _) = model.dockerState, bytes > 0 {
-                Text("up to \(ByteFormatting.string(bytes))")
-                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                Button("Clean") { confirmation = .docker }.disabled(model.isCleaning)
-            } else if case .available = model.dockerState {
-                Text("Empty").font(.caption).foregroundStyle(.tertiary)
-            }
+    private func reviewCleanup(_ target: StorageCleanupTarget) {
+        if case let .workspace(id) = target.kind, let workspace = model.workspaces.first(where: { $0.id == id }) {
+            collapsedRepositoryIDs.remove(workspace.repositoryID)
+            expandedWorkspaceIDs.insert(workspace.id)
         }
-        .padding(.horizontal, 13).padding(.vertical, 10)
+        section = .cleanup
+        cleanupReviewTarget = target
     }
 
     private var worktreesSection: some View {
@@ -326,23 +265,22 @@ struct ContentView: View {
             }
             if !model.workspaces.isEmpty {
                 HStack(spacing: 10) {
-                    Text("WORKTREES").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Text("\(model.workspaces.count)").font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
+                    Text("WORKTREES").font(.caption.weight(.semibold)).foregroundStyle(SiftChartStyle.secondaryText)
+                    Text("\(model.workspaces.count)").font(.caption.monospacedDigit()).foregroundStyle(SiftChartStyle.mutedText)
                     Spacer()
-                    Button("Deselect all") { model.deselectAll() }.disabled(model.selectedCandidateIDs.isEmpty)
-                    Button("Select all") { model.selectAll() }.disabled(model.selectedCandidateIDs.count == model.candidates.count)
+                    Menu("Selection") {
+                        Button("Select all folders") { model.selectAll() }
+                            .disabled(model.selectedCandidateIDs.count == model.candidates.count)
+                        Button("Deselect all folders") { model.deselectAll() }.disabled(model.selectedCandidateIDs.isEmpty)
+                        Divider()
+                        Button("Select folders older than 30 days") { model.selectOlderGeneratedFolders() }
+                        Text("Age is modification date, not last use. Review before cleaning.")
+                    }.menuStyle(.borderlessButton).fixedSize()
                 }
                 .buttonStyle(.plain)
                 .font(.caption.weight(.medium))
-                HStack {
-                    Button("Select folders older than 30 days") { model.selectOlderGeneratedFolders() }
-                        .buttonStyle(.plain).font(.caption).foregroundStyle(SiftTheme.accent)
-                    Spacer()
-                }
-                Text("Age uses the folder's modification date, not last use. Review selections before cleaning.")
-                    .font(.caption2).foregroundStyle(.tertiary)
-                Text("Worktree values are generated-folder sizes. Actual freed space is measured after permanent deletion.")
-                    .font(.caption2).foregroundStyle(.tertiary)
+                Text("Generated dependencies and build output · select folders to remove")
+                    .font(.caption2).foregroundStyle(SiftChartStyle.mutedText)
             }
 
             if model.workspaces.isEmpty {
@@ -355,7 +293,7 @@ struct ContentView: View {
                         VStack(spacing: 4) {
                             Text("Nothing to clean right now").font(.headline)
                             Text("No generated dependency or build folders were found in your scanned projects.")
-                                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                                .font(.caption).foregroundStyle(SiftChartStyle.secondaryText).multilineTextAlignment(.center)
                         }
                         HStack(spacing: 12) {
                             Button("Scan again") { model.scan() }
@@ -376,9 +314,9 @@ struct ContentView: View {
                 Text("Scanning worktrees…").font(.caption.weight(.semibold))
                 if model.discoveredWorkspaceCount > 0 {
                     Text("\(model.scannedWorkspaceCount) of \(model.discoveredWorkspaceCount) checked")
-                        .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                        .font(.caption2).foregroundStyle(SiftChartStyle.secondaryText).monospacedDigit()
                 } else {
-                    Text("Discovering Git repositories").font(.caption2).foregroundStyle(.secondary)
+                    Text("Discovering Git repositories").font(.caption2).foregroundStyle(SiftChartStyle.secondaryText)
                 }
             }
             Spacer()
@@ -399,15 +337,15 @@ struct ContentView: View {
             } label: {
                 HStack(spacing: 9) {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text(repository.name).font(.headline).lineLimit(1)
+                        Text(repository.name).font(.callout.weight(.semibold)).lineLimit(1)
                         Text("\(repository.workspaces.count)")
-                            .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
+                            .font(.caption.monospacedDigit()).foregroundStyle(SiftChartStyle.mutedText)
                     }
                     Spacer()
                     Text(ByteFormatting.string(repository.reclaimableBytes))
-                        .font(.callout.weight(.medium).monospacedDigit()).foregroundStyle(.secondary)
+                        .font(.callout.weight(.medium).monospacedDigit()).foregroundStyle(SiftChartStyle.secondaryText)
                     Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
-                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        .font(.caption.weight(.semibold)).foregroundStyle(SiftChartStyle.secondaryText)
                 }
                 .padding(.horizontal, 4).padding(.vertical, 3)
                 .contentShape(Rectangle())
@@ -419,7 +357,7 @@ struct ContentView: View {
                     VStack(spacing: 0) {
                         ForEach(Array(repository.workspaces.enumerated()), id: \.element.id) { index, workspace in
                             if index > 0 { Divider() }
-                            workspaceRow(workspace)
+                            workspaceRow(workspace).id("workspace-" + workspace.id)
                         }
                     }
                 }
@@ -440,19 +378,19 @@ struct ContentView: View {
                         HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 7) {
-                                    Text(workspace.name).font(.headline).lineLimit(1)
-                                    Text(workspace.branch).font(.caption)
+                                    Text(workspace.name).font(.callout.weight(.semibold)).lineLimit(1)
+                                    Text(workspace.branch).font(.caption2).foregroundStyle(SiftChartStyle.secondaryText)
                                         .padding(.horizontal, 7).padding(.vertical, 2)
                                         .siftGlassCapsule().lineLimit(1)
                                 }
-                                Text(workspace.url.path).font(.caption).foregroundStyle(.secondary)
+                                Text(workspace.url.path).font(.caption).foregroundStyle(SiftChartStyle.secondaryText)
                                     .lineLimit(1).truncationMode(.middle)
                             }
                             Spacer(minLength: 8)
                             Text(ByteFormatting.string(workspace.reclaimableBytes))
-                                .font(.callout.weight(.semibold).monospacedDigit())
+                                .font(.callout.weight(.medium).monospacedDigit())
                             Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                .font(.caption.weight(.semibold)).foregroundStyle(SiftChartStyle.secondaryText)
                         }.contentShape(Rectangle())
                     }.buttonStyle(.plain)
                 }
@@ -471,15 +409,15 @@ struct ContentView: View {
                                     if model.selectedCandidateIDs.contains(candidate.id) { model.selectedCandidateIDs.remove(candidate.id) }
                                     else { model.selectedCandidateIDs.insert(candidate.id) }
                                 }
-                                Image(systemName: candidate.kind.symbolName).foregroundStyle(.secondary).frame(width: 20)
+                                Image(systemName: candidate.kind.symbolName).foregroundStyle(SiftChartStyle.secondaryText).frame(width: 20)
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(candidate.url.lastPathComponent).font(.callout.weight(.medium))
-                                    Text(relativeParent(candidate, workspace: workspace)).font(.caption2).foregroundStyle(.tertiary)
+                                    Text(relativeParent(candidate, workspace: workspace)).font(.caption2).foregroundStyle(SiftChartStyle.mutedText)
                                         .lineLimit(1).truncationMode(.middle)
                                 }
                                 Spacer()
                                 Text(ByteFormatting.string(candidate.allocatedBytes))
-                                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                    .font(.caption.monospacedDigit()).foregroundStyle(SiftChartStyle.secondaryText)
                             }
                             .padding(.horizontal, 13).padding(.vertical, 9)
                         }
@@ -504,11 +442,11 @@ struct ContentView: View {
                     .frame(width: 32, height: 32)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("\(model.applicationName) Settings").font(.headline)
-                        Text(model.versionLabel).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        Text(model.versionLabel).font(.caption2.monospacedDigit()).foregroundStyle(SiftChartStyle.secondaryText)
                     }
                     Spacer()
                     Button { showSettings = false } label: {
-                        Image(systemName: "xmark.circle.fill").font(.title3).foregroundStyle(.secondary)
+                        Image(systemName: "xmark.circle.fill").font(.title3).foregroundStyle(SiftChartStyle.secondaryText)
                     }
                     .buttonStyle(.plain).help("Close Settings")
                 }
@@ -519,20 +457,20 @@ struct ContentView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         VStack(alignment: .leading, spacing: 9) {
-                            Text("SOFTWARE UPDATE").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            Text("SOFTWARE UPDATE").font(.caption.weight(.semibold)).foregroundStyle(SiftChartStyle.secondaryText)
                             updateRow
                             Text("Sift checks for updates without sending telemetry or storage data.")
-                                .font(.caption2).foregroundStyle(.tertiary)
+                                .font(.caption2).foregroundStyle(SiftChartStyle.mutedText)
                         }
 
                         Divider()
 
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("WORKTREE CLEANUP").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            Text("WORKTREE CLEANUP").font(.caption.weight(.semibold)).foregroundStyle(SiftChartStyle.secondaryText)
                             HStack(alignment: .center, spacing: 12) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Delete immediately").font(.caption.weight(.medium))
-                                    Text("Skip macOS Trash for generated worktree folders").font(.caption2).foregroundStyle(.tertiary)
+                                    Text("Skip macOS Trash for generated worktree folders").font(.caption2).foregroundStyle(SiftChartStyle.mutedText)
                                 }
                                 Spacer(minLength: 12)
                                 Toggle("Delete immediately", isOn: $model.deletesImmediately)
@@ -552,18 +490,18 @@ struct ContentView: View {
 
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
-                                Text("SCANNED FOLDERS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                Text("SCANNED FOLDERS").font(.caption.weight(.semibold)).foregroundStyle(SiftChartStyle.secondaryText)
                                 Spacer()
                                 Button { model.addSearchRoot() } label: { Label("Add", systemImage: "plus") }
                                     .controlSize(.small)
                             }
                             ForEach(model.searchRoots, id: \.path) { root in
                                 HStack(spacing: 8) {
-                                    Image(systemName: "folder").foregroundStyle(.secondary)
+                                    Image(systemName: "folder").foregroundStyle(SiftChartStyle.secondaryText)
                                     Text(root.path).font(.caption).lineLimit(1).truncationMode(.middle)
                                     Spacer(minLength: 6)
                                     Button { model.removeSearchRoot(root) } label: {
-                                        Image(systemName: "minus.circle").foregroundStyle(.secondary)
+                                        Image(systemName: "minus.circle").foregroundStyle(SiftChartStyle.secondaryText)
                                     }
                                     .buttonStyle(.plain).help("Stop scanning this folder")
                                 }
@@ -571,7 +509,7 @@ struct ContentView: View {
                         }
 
                         Label(model.deletesImmediately ? "Generated worktree folders are deleted permanently. Global cache commands are also permanent." : "Generated worktree folders move to Trash. Global cache commands are permanent and always require confirmation.", systemImage: "lock.shield.fill")
-                            .font(.caption2).foregroundStyle(.tertiary)
+                            .font(.caption2).foregroundStyle(SiftChartStyle.mutedText)
                     }
                     .padding(16)
                 }
@@ -587,7 +525,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SiftChartStyle.secondaryText)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -604,7 +542,7 @@ struct ContentView: View {
     private var updateRow: some View {
         HStack(spacing: 10) {
             Image(systemName: "arrow.triangle.2.circlepath.circle")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SiftChartStyle.secondaryText)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Updates").font(.caption.weight(.medium))
                 switch model.updateState {
@@ -624,7 +562,7 @@ struct ContentView: View {
                     Text(message)
                 }
             }
-            .font(.caption2).foregroundStyle(.secondary)
+            .font(.caption2).foregroundStyle(SiftChartStyle.secondaryText)
             .lineLimit(2)
             Spacer(minLength: 6)
             switch model.updateState {
@@ -636,7 +574,7 @@ struct ContentView: View {
                     Button("Update") { confirmation = .update(release) }
                         .buttonStyle(.borderedProminent).controlSize(.small)
                     Button("Release notes") { model.openRelease(release) }
-                        .buttonStyle(.plain).font(.caption2).foregroundStyle(.secondary)
+                        .buttonStyle(.plain).font(.caption2).foregroundStyle(SiftChartStyle.secondaryText)
                 }
             case .checking, .downloading:
                 ProgressView().controlSize(.small)
@@ -651,7 +589,7 @@ struct ContentView: View {
         VStack(spacing: 6) {
             if let message = model.lastMessage {
                 HStack(spacing: 8) {
-                    Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2).help(message)
+                    Text(message).font(.caption).foregroundStyle(SiftChartStyle.secondaryText).lineLimit(2).help(message)
                     Spacer(minLength: 4)
                     if !model.lastTrashedURLs.isEmpty {
                         Button("Show in Trash") { model.showLastTrashedItems() }
@@ -675,29 +613,25 @@ struct ContentView: View {
                         }
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .buttonStyle(.plain).foregroundStyle(SiftChartStyle.secondaryText)
                 .help(updateAvailable ? "Settings · Update available" : "Settings")
                 .accessibilityLabel(updateAvailable ? "Settings, update available" : "Settings")
                 HStack(spacing: 5) {
                     Image(systemName: "internaldrive").frame(width: 22, height: 22)
                     Text(freeSpaceText)
                 }
-                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                .font(.caption.weight(.medium)).foregroundStyle(SiftChartStyle.secondaryText)
                 Spacer()
                 if section == .cleanup {
-                Button { confirmation = .folders } label: {
-                    if isInitialScan {
-                        HStack { ProgressView().controlSize(.small); Text("Scanning…") }.frame(minWidth: 170)
-                    } else if model.isCleaning { ProgressView().controlSize(.small).frame(minWidth: 170) }
-                    else {
-                        Label(
-                            "\(model.deletesImmediately ? "Delete" : "Move to Trash") · \(ByteFormatting.string(model.selectedBytes)) selected",
-                            systemImage: model.deletesImmediately ? "trash.slash" : "trash"
-                        )
+                    if model.isCleaning {
+                        ProgressView().controlSize(.small).accessibilityLabel("Cleanup in progress")
+                    } else if model.selectedCandidates.isEmpty {
+                        Text(isInitialScan ? "Scanning worktrees…" : "No folders selected")
+                            .font(.caption).foregroundStyle(SiftChartStyle.mutedText)
+                    } else {
+                        CleanupSelectionButton(bytes: model.selectedBytes, deletesImmediately: model.deletesImmediately,
+                                               disabled: isInitialScan) { confirmation = .folders }
                     }
-                }
-                .buttonStyle(.borderedProminent).controlSize(.large)
-                .disabled(model.selectedCandidates.isEmpty || model.isCleaning || isInitialScan)
                 }
             }
         }
@@ -718,7 +652,7 @@ struct ContentView: View {
 
     private var storageFreeFraction: Double {
         guard let free = model.freeDiskSpace(), let capacity = model.diskCapacity(), capacity > 0 else { return 0 }
-        return min(1, max(0.02, Double(free) / Double(capacity)))
+        return min(1, max(0, Double(free) / Double(capacity)))
     }
 
     private func toggleExpansion(_ workspace: Workspace) {
@@ -768,7 +702,8 @@ private enum CleanupConfirmation: Equatable {
         case .docker:
             return "Pruning is permanent and uses only the local Docker Engine. Unused images and build cache are removed; active images, containers, and volumes remain untouched."
         case .allGlobals:
-            return "Docker unused images and build cache plus each installed package-manager cache will be cleaned sequentially. Active Docker images, containers, and volumes remain untouched. Active uv processes can prevent uv cleanup; Sift never bypasses uv's cache lock."
+            let names = model.cleanableGlobalCaches.map(\.name) + (model.dockerState.reclaimableBytes > 0 ? ["Docker unused data"] : [])
+            return "Eligible sources: \(names.joined(separator: ", ")). Cleanup is permanent. Plugins, simulators, and blocked caches are excluded. Docker containers and volumes, app profiles, and conversations remain protected. Stored sizes are not guaranteed savings."
         case let .global(id):
             if let cache = model.globalCaches.first(where: { $0.id == id }), id == "simulators" || id == "pulumi" || RegenerableCacheService.definitions.contains(where: { $0.id == id }) {
                 return "\(cache.detail). Cleanup is permanent. The displayed size is folder-attributed storage, not guaranteed freed space."
@@ -788,7 +723,7 @@ private enum CleanupConfirmation: Equatable {
         switch self {
         case .folders: return model.deletesImmediately ? "Permanently delete selected folders?" : "Move selected folders to Trash?"
         case .docker: return "Remove unused Docker data?"
-        case .allGlobals: return "Clean Docker and all global caches?"
+        case .allGlobals: return "Clean eligible caches?"
         case let .global(id):
             let cache = model.globalCaches.first(where: { $0.id == id })
             return "\(cache?.onlyPrunesUnusedData == true ? "Prune" : "Clean") \(cache?.name ?? "global cache")?"
@@ -815,46 +750,6 @@ private enum CleanupConfirmation: Equatable {
     }
 }
 
-private struct LoadingRow: View {
-    let width: CGFloat
-
-    var body: some View {
-        HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 5).fill(.quaternary).frame(width: 18, height: 18)
-            RoundedRectangle(cornerRadius: 4).fill(.quaternary).frame(maxWidth: 220 * width, minHeight: 11, maxHeight: 11)
-            Spacer()
-            RoundedRectangle(cornerRadius: 4).fill(.quaternary).frame(width: 48, height: 11)
-        }
-        .padding(.horizontal, 14).padding(.vertical, 12)
-        .siftGlassSurface(cornerRadius: 11, interactive: false)
-        .redacted(reason: .placeholder)
-    }
-}
-
-private enum SelectionState { case off, mixed, on }
-
-private struct SelectionCheckbox: View {
-    let state: SelectionState
-    let action: () -> Void
-
-    var body: some View {
-        ZStack {
-            ZStack {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(state == .off ? Color.clear : SiftTheme.accent)
-                    .overlay { RoundedRectangle(cornerRadius: 5).stroke(state == .off ? Color.secondary : Color.clear, lineWidth: 1.2) }
-                if state == .on { Image(systemName: "checkmark").font(.caption2.weight(.bold)).foregroundStyle(.white) }
-                if state == .mixed { Image(systemName: "minus").font(.caption2.weight(.bold)).foregroundStyle(.white) }
-            }.frame(width: 18, height: 18)
-        }
-        .frame(width: 30, height: 30)
-        .contentShape(Rectangle())
-        .onTapGesture(perform: action)
-        .accessibilityElement()
-        .accessibilityLabel(state == .off ? "Select" : "Deselect")
-        .accessibilityAddTraits(.isButton)
-    }
-}
 
 private struct Panel<Content: View>: View {
     let padding: CGFloat
@@ -867,9 +762,7 @@ private struct Panel<Content: View>: View {
 
     var body: some View {
         content.padding(padding)
-            .background {
-                BehindWindowContentMaterial(cornerRadius: 13)
-            }
+            .siftStorageSurface()
     }
 }
 
@@ -878,7 +771,10 @@ private extension View {
     func siftGlassSurface(cornerRadius: CGFloat, interactive: Bool) -> some View {
         if #available(macOS 26.0, *) {
             let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            glassEffect(.clear.interactive(interactive), in: shape)
+            background {
+                shape.fill(.clear).glassEffect(.clear.interactive(interactive), in: shape)
+                    .allowsHitTesting(false)
+            }
         } else {
             background(
                 .quinary.opacity(0.6),
@@ -894,7 +790,9 @@ private extension View {
     @ViewBuilder
     func siftGlassFooter() -> some View {
         if #available(macOS 26.0, *) {
-            glassEffect(.regular, in: Rectangle())
+            background {
+                Rectangle().fill(.clear).glassEffect(.clear, in: Rectangle()).opacity(0.35).allowsHitTesting(false)
+            }
         } else {
             background(.regularMaterial)
                 .overlay(alignment: .top) { Divider() }
@@ -904,7 +802,7 @@ private extension View {
     @ViewBuilder
     func siftGlassCapsule() -> some View {
         if #available(macOS 26.0, *) {
-            glassEffect(.clear, in: Capsule())
+            background { Capsule().fill(.clear).glassEffect(.clear, in: Capsule()).opacity(0.25).allowsHitTesting(false) }
         } else {
             background(.quaternary, in: Capsule())
         }
@@ -920,34 +818,7 @@ private extension View {
     }
 }
 
-private struct BehindWindowContentMaterial: NSViewRepresentable {
-    let cornerRadius: CGFloat
-
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .popover
-        view.blendingMode = .behindWindow
-        view.state = .active
-        view.alphaValue = 0.78
-        view.wantsLayer = true
-        view.layer?.cornerCurve = .continuous
-        view.layer?.cornerRadius = cornerRadius
-        view.layer?.masksToBounds = true
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {
-        view.layer?.cornerRadius = cornerRadius
-    }
-}
-
 private enum SiftTheme {
-    static let accent = Color(red: 0.96, green: 0.29, blue: 0.14)
-    static let destructiveAccent = Color(red: 0.96, green: 0.29, blue: 0.14)
-    static let warmOrange = Color(red: 1.00, green: 0.49, blue: 0.12)
-    static let brandGradient = LinearGradient(
-        colors: [warmOrange, accent],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
+    static let accent = SiftChartStyle.accent
+    static let destructiveAccent = SiftChartStyle.accent
 }

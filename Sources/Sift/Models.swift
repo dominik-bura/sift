@@ -135,6 +135,13 @@ struct GlobalCache: Identifiable, Equatable, Sendable {
         return 0
     }
 
+    var measuredBytes: Int64? {
+        switch state {
+        case let .available(bytes, _), let .blocked(bytes, _, _): bytes
+        default: nil
+        }
+    }
+
     var onlyPrunesUnusedData: Bool {
         id == "pnpm" || id == "homebrew" || id == "simulators"
     }

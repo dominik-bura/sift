@@ -181,6 +181,17 @@ struct GlobalCacheService: Sendable {
         guard let validated = validatedCachePath(path) else {
             return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: definition.symbol, state: .failed("Cache location is outside your home folder"))
         }
+        if definition.id == "simulators" {
+            do {
+                let measurement = try SimulatorCacheService().inspect(executable: executable, deviceRoot: validated)
+                return GlobalCache(id: definition.id, name: definition.name,
+                                   detail: "\(measurement.deviceCount) unavailable device\(measurement.deviceCount == 1 ? "" : "s") · available devices and runtimes are preserved",
+                                   symbolName: definition.symbol, state: .available(bytes: measurement.bytes, path: validated.path))
+            } catch {
+                return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail,
+                                   symbolName: definition.symbol, state: .failed(error.localizedDescription))
+            }
+        }
         guard let bytes = allocatedSize(of: validated) else {
             return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: definition.symbol,
                                state: .failed("Could not measure cache; check permissions"))

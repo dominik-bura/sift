@@ -5,6 +5,7 @@ import SwiftUI
 struct FullWidthSegmentedControl: NSViewRepresentable {
     let labels: [String]
     @Binding var selection: Int
+    var accessibilityLabel = "Sift section"
 
     func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
 
@@ -16,9 +17,11 @@ struct FullWidthSegmentedControl: NSViewRepresentable {
             action: #selector(Coordinator.selectSegment(_:))
         )
         control.segmentDistribution = .fillEqually
-        control.controlSize = .large
+        control.segmentStyle = .texturedRounded
+        control.controlSize = .regular
+        control.selectedSegmentBezelColor = NSColor(SiftChartStyle.accent)
         control.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        control.setAccessibilityLabel("Sift section")
+        control.setAccessibilityLabel(accessibilityLabel)
         control.selectedSegment = selection
         return control
     }
@@ -26,6 +29,8 @@ struct FullWidthSegmentedControl: NSViewRepresentable {
     func updateNSView(_ control: NSSegmentedControl, context: Context) {
         context.coordinator.selection = $selection
         control.selectedSegment = selection
+        control.selectedSegmentBezelColor = NSColor(SiftChartStyle.accent)
+        control.setAccessibilityLabel(accessibilityLabel)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSSegmentedControl, context: Context) -> CGSize? {

@@ -23,5 +23,8 @@ final class SectionControlTests: XCTestCase {
         XCTAssertEqual(control.segmentDistribution, .fillEqually)
         XCTAssertEqual(control.label(forSegment: 0), "Clean up")
         XCTAssertEqual(control.selectedSegment, 0)
+        let selectionColor = control.selectedSegmentBezelColor?.usingColorSpace(.deviceRGB)
+        XCTAssertNotNil(selectionColor)
+        XCTAssertGreaterThan(selectionColor?.redComponent ?? 0, selectionColor?.blueComponent ?? 1)
     }
 }

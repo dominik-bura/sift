@@ -20,11 +20,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var cleaningGlobalCacheID: String?
     @Published private(set) var isCleaningDocker = false
     @Published var lastMessage: String?
+    @Published private(set) var lastCleanupObservation: CleanupObservation?
     @Published var lastSyncedAt: Date?
     @Published var searchRoots: [URL]
     @Published var updateState: UpdateState = .idle
     @Published private(set) var availableDiskBytes: Int64?
     @Published private(set) var totalDiskBytes: Int64?
+    @Published private(set) var diskHistory = DiskSpaceHistory(samples: (UserDefaults.standard.data(forKey: "diskSpaceHistory.v1")
+        .flatMap { try? JSONDecoder().decode([DiskSpaceSample].self, from: $0) }) ?? [])
     @Published private(set) var lastTrashedURLs: [URL] = []
     @Published var deletesImmediately: Bool {
         didSet { UserDefaults.standard.set(deletesImmediately, forKey: "deleteGeneratedFoldersImmediately") }
@@ -271,13 +274,13 @@ final class AppModel: ObservableObject {
             let containsHiddenFolders = result.trashedURLs.contains { $0.lastPathComponent.hasPrefix(".") }
             if mode == .deleteImmediately, result.failed.isEmpty {
                 try? await Task.sleep(for: .milliseconds(500))
-                refreshDiskSpace()
+                refreshDiskSpace(cleanupEvent: true)
                 let after = availableDiskBytes ?? Self.diskSpaceSnapshot().available
                 let actuallyFreed = max(0, (after ?? before ?? 0) - (before ?? after ?? 0))
                 lastMessage = "Permanently deleted \(result.trashed.count) generated folder\(result.trashed.count == 1 ? "" : "s") · macOS free space increased by \(ByteFormatting.string(actuallyFreed))."
             } else if mode == .deleteImmediately {
                 try? await Task.sleep(for: .milliseconds(500))
-                refreshDiskSpace()
+                refreshDiskSpace(cleanupEvent: true)
                 let after = availableDiskBytes ?? Self.diskSpaceSnapshot().available
                 let actuallyFreed = max(0, (after ?? before ?? 0) - (before ?? after ?? 0))
                 lastMessage = "Permanently deleted \(result.trashed.count) generated folders; \(result.failed.count) failed · macOS free space increased by \(ByteFormatting.string(actuallyFreed))."
@@ -287,6 +290,7 @@ final class AppModel: ObservableObject {
             } else {
                 lastMessage = "Moved \(result.trashed.count) folders to Trash; \(result.failed.count) could not be moved."
             }
+            recordCleanupObservation("Worktree folders", before: before, movedToTrash: mode == .trash && !result.trashedURLs.isEmpty)
             isCleaning = false
             if isScanning {
                 rescanWhenIdle = true
@@ -314,9 +318,10 @@ final class AppModel: ObservableObject {
         Task {
             do {
                 let output = try await Task.detached(priority: .userInitiated) { try docker.pruneUnusedData() }.value
-                refreshDiskSpace()
+                refreshDiskSpace(cleanupEvent: true)
                 let hostFreed = max(0, (availableDiskBytes ?? before ?? 0) - (before ?? availableDiskBytes ?? 0))
                 let dockerFreed = DockerService.reclaimedBytes(fromPruneOutput: output)
+                recordCleanupObservation("Docker", before: before)
                 let dockerReport = dockerFreed.map { "Docker reports \(ByteFormatting.string($0)) reclaimed" } ?? "Docker cleanup completed"
                 lastMessage = hostFreed > 0
                     ? "\(dockerReport) · macOS free space increased by \(ByteFormatting.string(hostFreed))."
@@ -344,21 +349,25 @@ final class AppModel: ObservableObject {
                 try await Task.detached(priority: .userInitiated) { try service.clean(id: cache.id) }.value
                 let refreshed = await Task.detached(priority: .utility) { service.inspect(id: cache.id) }.value
                 if let refreshed { replaceGlobalCache(refreshed) }
-                let remainingBytes = refreshed?.bytes ?? 0
-                let removedFromCache = max(0, cache.bytes - remainingBytes)
+                else { replaceGlobalCache(cache, state: .failed("Cleanup finished, but the cache could not be remeasured")) }
+                let remainingBytes = refreshed?.measuredBytes
+                let removedFromCache = remainingBytes.map { max(0, cache.bytes - $0) }
                 try? await Task.sleep(for: .milliseconds(300))
-                refreshDiskSpace()
+                refreshDiskSpace(cleanupEvent: true)
                 let actuallyFreed = max(0, (availableDiskBytes ?? before ?? 0) - (before ?? availableDiskBytes ?? 0))
-                if removedFromCache > 0 {
+                if let removedFromCache, removedFromCache > 0 {
                     let verb = cache.onlyPrunesUnusedData ? "pruned" : "cleaned"
                     lastMessage = actuallyFreed > 0
-                        ? "\(cache.name) \(verb) · estimate dropped by \(ByteFormatting.string(removedFromCache)); macOS free space increased by \(ByteFormatting.string(actuallyFreed))."
-                        : "\(cache.name) \(verb) · estimate dropped by \(ByteFormatting.string(removedFromCache)); macOS reported no immediate free-space change."
+                        ? "\(cache.name) \(verb) · stored size decreased by \(ByteFormatting.string(removedFromCache)); macOS free space increased by \(ByteFormatting.string(actuallyFreed))."
+                        : "\(cache.name) \(verb) · stored size decreased by \(ByteFormatting.string(removedFromCache)); macOS reported no immediate free-space change."
+                } else if remainingBytes == nil {
+                    lastMessage = "\(cache.name) cleanup command finished; remaining size could not be measured. See the observed free-space result."
                 } else {
                     lastMessage = actuallyFreed > 0
                         ? "\(cache.name) cleanup completed; macOS free space increased by \(ByteFormatting.string(actuallyFreed))."
-                        : "\(cache.name) cleanup completed; stored size is unchanged and macOS reported no immediate free-space increase. Shared data or freshly generated cache files can explain this."
+                        : "\(cache.name) cleanup completed; stored size did not decrease and macOS reported no immediate free-space increase. Shared data or freshly generated cache files can explain this."
                 }
+                recordCleanupObservation(cache.name, before: before)
             } catch {
                 lastMessage = "\(cache.name) cleanup failed: \(error.localizedDescription)"
                 if let refreshed = await Task.detached(priority: .utility, operation: { service.inspect(id: cache.id) }).value {
@@ -417,16 +426,13 @@ final class AppModel: ObservableObject {
             var succeeded = 0
             var failed = 0
             var failedNames: [String] = []
-            var estimateDrop: Int64 = 0
 
             if cleansDocker {
                 isCleaningDocker = true
-                let previousDockerBytes = dockerState.reclaimableBytes
                 do {
                     _ = try await Task.detached(priority: .userInitiated) { try docker.pruneUnusedData() }.value
                     let refreshedDocker = await Task.detached(priority: .utility) { docker.status() }.value
                     dockerState = refreshedDocker
-                    estimateDrop += max(0, previousDockerBytes - refreshedDocker.reclaimableBytes)
                     succeeded += 1
                 } catch {
                     failed += 1
@@ -444,7 +450,8 @@ final class AppModel: ObservableObject {
                     let refreshed = await Task.detached(priority: .utility) { service.inspect(id: cache.id) }.value
                     if let refreshed {
                         replaceGlobalCache(refreshed)
-                        estimateDrop += max(0, cache.bytes - refreshed.bytes)
+                    } else {
+                        replaceGlobalCache(cache, state: .failed("Cleanup finished, but the cache could not be remeasured"))
                     }
                     succeeded += 1
                 } catch {
@@ -460,15 +467,23 @@ final class AppModel: ObservableObject {
 
             cleaningGlobalCacheID = nil
             try? await Task.sleep(for: .milliseconds(300))
-            refreshDiskSpace()
+            refreshDiskSpace(cleanupEvent: true)
             let freeSpaceIncrease = max(0, (availableDiskBytes ?? before ?? 0) - (before ?? availableDiskBytes ?? 0))
             let failureText = failed > 0 ? "; \(failed) failed (\(failedNames.joined(separator: ", ")))" : ""
             let diskText = freeSpaceIncrease > 0
                 ? "macOS free space increased by \(ByteFormatting.string(freeSpaceIncrease))"
                 : "macOS reported no immediate free-space change"
-            lastMessage = "Cleaned \(succeeded) item\(succeeded == 1 ? "" : "s")\(failureText) · estimate dropped by \(ByteFormatting.string(estimateDrop)); \(diskText)."
+            lastMessage = "Cleanup commands completed for \(succeeded) source\(succeeded == 1 ? "" : "s")\(failureText) · \(diskText)."
+            recordCleanupObservation("Eligible caches", before: before)
             isCleaning = false
         }
+    }
+
+    private func recordCleanupObservation(_ operation: String, before: Int64?, movedToTrash: Bool = false) {
+        NativeScanCache.shared.invalidate()
+        lastCleanupObservation = CleanupObservation(operation: operation, before: before,
+                                                     after: Self.diskSpaceSnapshot().available,
+                                                     movedToTrash: movedToTrash)
     }
 
     private func replaceGlobalCache(_ cache: GlobalCache) {
@@ -580,10 +595,15 @@ final class AppModel: ObservableObject {
         totalDiskBytes
     }
 
-    func refreshDiskSpace() {
+    func refreshDiskSpace(cleanupEvent: Bool = false) {
         let values = Self.diskSpaceSnapshot()
         availableDiskBytes = values.available
         totalDiskBytes = values.total
+        if let free = values.available, let capacity = values.total,
+           diskHistory.record(free: free, capacity: capacity, cleanup: cleanupEvent),
+           let data = try? JSONEncoder().encode(diskHistory.samples) {
+            UserDefaults.standard.set(data, forKey: "diskSpaceHistory.v1")
+        }
     }
 
     private static func diskSpaceSnapshot() -> (available: Int64?, total: Int64?) {

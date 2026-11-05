@@ -2,13 +2,53 @@ import AppKit
 import Darwin
 import SwiftUI
 
+enum MemoryFormatting {
+    static func string(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: max(0, bytes), countStyle: .memory)
+    }
+}
+
 struct ProcessMemory: Equatable, Sendable {
     let pid: Int32
     let parent: Int32
     let bytes: Int64
 }
 
+struct SystemMemoryUsage: Equatable, Sendable {
+    let usedBytes: Int64
+    let totalBytes: Int64
+    var availableBytes: Int64 { totalBytes - usedBytes }
+    var usedFraction: Double { Double(usedBytes) / Double(totalBytes) }
+
+    static func calculate(_ statistics: vm_statistics64_data_t, pageSize: UInt64, physicalBytes: UInt64) -> Self? {
+        guard pageSize > 0, let total = Int64(exactly: physicalBytes), total > 0 else { return nil }
+        // Anonymous resident pages (excluding purgeable data), wired memory,
+        // and the physical compressor footprint. File caches and disk swap
+        // are not counted as RAM in use; do not sum per-app RSS here.
+        let anonymous = UInt64(statistics.internal_page_count)
+        let appPages = anonymous - min(anonymous, UInt64(statistics.purgeable_count))
+        let pages = appPages + UInt64(statistics.wire_count) + UInt64(statistics.compressor_page_count)
+        let (bytes, overflow) = pages.multipliedReportingOverflow(by: pageSize)
+        guard !overflow else { return nil }
+        return Self(usedBytes: Int64(min(bytes, physicalBytes)), totalBytes: total)
+    }
+}
+
 struct MemoryService: Sendable {
+    static func systemUsage() -> SystemMemoryUsage? {
+        let host = mach_host_self()
+        defer { mach_port_deallocate(mach_task_self_, host) }
+        var statistics = vm_statistics64_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &statistics) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(host, HOST_VM_INFO64, $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+        return SystemMemoryUsage.calculate(statistics, pageSize: UInt64(vm_kernel_page_size),
+                                           physicalBytes: ProcessInfo.processInfo.physicalMemory)
+    }
     func processes() -> [ProcessMemory] {
         let result = SecureCommandRunner().run(URL(fileURLWithPath: "/bin/ps"),
                                                arguments: ["-axo", "pid=,ppid=,rss="], timeout: 10)
@@ -52,15 +92,18 @@ struct RunningAppMemory: Identifiable {
 @MainActor final class MemoryOverviewModel: ObservableObject {
     @Published private(set) var apps: [RunningAppMemory] = []
     @Published private(set) var swapBytes: Int64?
+    @Published private(set) var systemUsage: SystemMemoryUsage?
     @Published private(set) var refreshing = false
     @Published var message: String?
+    func refreshSystemUsage() { systemUsage = MemoryService.systemUsage() }
     func refresh() {
         guard !refreshing else { return }
         refreshing = true
         Task {
             let service = MemoryService()
-            let snapshot = await Task.detached(priority: .utility) { (service.processes(), MemoryService.swapBytes()) }.value
+            let snapshot = await Task.detached(priority: .utility) { (service.processes(), MemoryService.swapBytes(), MemoryService.systemUsage()) }.value
             swapBytes = snapshot.1
+            systemUsage = snapshot.2
             apps = NSWorkspace.shared.runningApplications.compactMap { app in
                 guard app.activationPolicy == .regular, let bundle = app.bundleURL,
                       app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
@@ -81,6 +124,36 @@ struct RunningAppMemory: Identifiable {
     }
 }
 
+struct MemorySummaryView: View {
+    @ObservedObject var memory: MemoryOverviewModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(memory.systemUsage.map { MemoryFormatting.string($0.usedBytes) } ?? "—")
+                    .font(.system(size: 27, weight: .semibold)).monospacedDigit().tracking(-0.6)
+                Text("RAM in use").font(.callout).foregroundStyle(SiftChartStyle.secondaryText)
+                Spacer()
+            }
+            if let usage = memory.systemUsage {
+                Text("\(MemoryFormatting.string(usage.usedBytes)) used of \(MemoryFormatting.string(usage.totalBytes)) physical memory")
+                    .font(.caption.monospacedDigit()).foregroundStyle(SiftChartStyle.mutedText)
+                StorageBlockBar(fraction: usage.usedFraction, cells: 48).frame(height: 8)
+                    .accessibilityElement().accessibilityLabel("RAM usage")
+                    .accessibilityValue("\(Int((usage.usedFraction * 100).rounded())) percent")
+            } else {
+                Text("System memory usage unavailable").font(.caption).foregroundStyle(SiftChartStyle.mutedText)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 16)
+        .help("System RAM: anonymous memory excluding purgeable pages, wired memory, and compressed memory. Excludes file caches and disk swap. Not a memory-pressure indicator.")
+        .task {
+            while !Task.isCancelled {
+                memory.refreshSystemUsage()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+}
+
 struct MemoryOverviewView: View {
     @ObservedObject var memory: MemoryOverviewModel
     @State private var appToQuit: RunningAppMemory?
@@ -97,7 +170,7 @@ struct MemoryOverviewView: View {
             HStack {
                 Label("System swap", systemImage: "memorychip")
                 Spacer()
-                Text(memory.swapBytes.map(ByteFormatting.string) ?? "Unavailable").monospacedDigit()
+                Text(memory.swapBytes.map(MemoryFormatting.string) ?? "Unavailable").monospacedDigit()
             }.padding(13).siftStorageSurface()
             Text("Swap is RAM offloaded to disk and managed by macOS. Closing apps may relieve memory pressure; saved files and caches remain.")
                 .font(.caption2).foregroundStyle(.secondary)
@@ -105,10 +178,10 @@ struct MemoryOverviewView: View {
             VStack(spacing: 0) {
                 ForEach(memory.apps) { app in
                     HStack {
-                        Text(app.name).font(.callout).lineLimit(1)
+                        Text(app.name).font(.callout.weight(.medium)).lineLimit(1)
                         Spacer()
-                        Text(ByteFormatting.string(app.bytes)).font(.caption.monospacedDigit())
-                        Button("Quit") { appToQuit = app }.controlSize(.small)
+                        Text(MemoryFormatting.string(app.bytes)).font(.caption.monospacedDigit())
+                        Button("Quit") { appToQuit = app }.buttonStyle(SiftQuietButtonStyle())
                     }.padding(12)
                     if app.id != memory.apps.last?.id { Divider().padding(.horizontal, 12) }
                 }
