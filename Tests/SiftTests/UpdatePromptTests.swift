@@ -17,6 +17,11 @@ private actor UpdateGate {
 @MainActor private final class InstallRecorder { var calls = 0 }
 
 final class UpdatePromptTests: XCTestCase {
+    @MainActor func testMenuPanelInteractionDoesNotRequireApplicationActivation() {
+        XCTAssertTrue(UpdateInteractionMonitor.isInteracting(isVisible: true, isKey: true))
+        XCTAssertFalse(UpdateInteractionMonitor.isInteracting(isVisible: false, isKey: true))
+        XCTAssertFalse(UpdateInteractionMonitor.isInteracting(isVisible: true, isKey: false))
+    }
     private let release = UpdateRelease(version: "99.0.0", downloadURL: URL(string: "https://example.com/app.zip")!,
                                         checksumURL: nil, digest: nil, releasePageURL: URL(string: "https://example.com/release")!)
 

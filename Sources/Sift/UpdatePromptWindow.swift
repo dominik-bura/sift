@@ -8,7 +8,7 @@ import SwiftUI
     init(model: AppModel, release: UpdateRelease, onClose: @escaping (Bool) -> Void) {
         self.onClose = onClose
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 380),
-                            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+                            styleMask: [.titled, .closable, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.title = "\(model.applicationName) Update"
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
@@ -85,10 +85,11 @@ struct UpdatePromptView: View {
 }
 
 /// Observe the actual menu window, not just SwiftUI onAppear (which can run
-/// during preloading). Only a key window in an active app counts as interaction.
+/// during preloading). Menu-bar panels can be key without activating their app.
 struct UpdateInteractionMonitor: NSViewRepresentable {
     let allowsPrompt: Bool
     let onChange: (Bool, Bool) -> Void
+    static func isInteracting(isVisible: Bool, isKey: Bool) -> Bool { isVisible && isKey }
     func makeNSView(context: Context) -> MonitorView { MonitorView() }
     func updateNSView(_ view: MonitorView, context: Context) {
         view.allowsPrompt = allowsPrompt
@@ -120,7 +121,8 @@ struct UpdateInteractionMonitor: NSViewRepresentable {
         func notifyLater() {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.onChange?(self.window?.isKeyWindow == true && NSApp.isActive, self.allowsPrompt)
+                self.onChange?(UpdateInteractionMonitor.isInteracting(isVisible: self.window?.isVisible == true,
+                                                                      isKey: self.window?.isKeyWindow == true), self.allowsPrompt)
             }
         }
         deinit { for token in tokens { NotificationCenter.default.removeObserver(token) } }

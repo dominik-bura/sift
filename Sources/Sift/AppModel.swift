@@ -576,6 +576,9 @@ final class AppModel: ObservableObject {
     }
 
     func requestUpdatePrompt() {
+        // This method is an explicit user action, including in a nonactivating
+        // menu-bar panel whose focus notification has not arrived yet.
+        updateInteractionActive = true
         if case .failed = updateState, let release = latestUpdateRelease {
             updateState = .available(release)
         }
