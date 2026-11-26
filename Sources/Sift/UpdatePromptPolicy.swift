@@ -8,6 +8,10 @@ struct UpdatePromptPolicy: Codable, Equatable {
     var reminderVersion: String?
     var remindAfter: Date?
 
+    func allowsAutomaticUpdate(version: String, now: Date) -> Bool {
+        skippedVersion != version && (reminderVersion != version || remindAfter.map { now >= $0 } != false)
+    }
+
     func shouldPresent(version: String, now: Date) -> Bool {
         guard skippedVersion != version else { return false }
         if reminderVersion == version, let remindAfter { return now >= remindAfter }

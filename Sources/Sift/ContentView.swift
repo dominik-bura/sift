@@ -458,6 +458,15 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 9) {
                             Text("SOFTWARE UPDATE").font(.caption.weight(.semibold)).foregroundStyle(SiftChartStyle.secondaryText)
                             updateRow
+                            HStack {
+                                Text("Automatically install updates").font(.caption)
+                                Spacer()
+                                Toggle("Automatically install updates", isOn: $model.automaticallyInstallsUpdates)
+                                    .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                                    .disabled(model.updateState == .unavailable || model.isUpdating)
+                            }
+                            Text("Download in the background, then restart after a minute with no open Sift window or cleanup running. Off by default.")
+                                .font(.caption2).foregroundStyle(SiftChartStyle.mutedText)
                             Text("Sift checks for updates without sending telemetry or storage data.")
                                 .font(.caption2).foregroundStyle(SiftChartStyle.mutedText)
                         }.siftSettingsCard()
@@ -571,6 +580,10 @@ struct ContentView: View {
                     Text("Version \(release.version) is available")
                 case let .downloading(release):
                     Text("Downloading and verifying \(release.version)…")
+                case let .preparing(release):
+                    Text("Preparing \(release.version) in the background…")
+                case let .ready(release):
+                    Text("\(release.version) ready · \(model.automaticallyInstallsUpdates ? "installs when Sift is idle" : "restart to update")")
                 case let .failed(message):
                     Text(message)
                 }
@@ -598,7 +611,10 @@ struct ContentView: View {
                     Button("Release notes") { model.openRelease(release) }
                         .buttonStyle(.plain).font(.caption2).foregroundStyle(SiftChartStyle.secondaryText)
                 }
-            case .checking, .downloading:
+            case .ready:
+                Button("Restart to Update") { model.requestUpdatePrompt() }
+                    .controlSize(.small).disabled(model.isCleaning)
+            case .checking, .downloading, .preparing:
                 ProgressView().controlSize(.small)
             case .unavailable:
                 EmptyView()
@@ -636,8 +652,8 @@ struct ContentView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).foregroundStyle(SiftChartStyle.secondaryText)
-                .help(updateAvailable ? "Settings · Update available" : "Settings")
-                .accessibilityLabel(updateAvailable ? "Settings, update available" : "Settings")
+                .help(model.isUpdateReady ? "Settings · Update ready" : updateAvailable ? "Settings · Update available" : "Settings")
+                .accessibilityLabel(model.isUpdateReady ? "Settings, update ready" : updateAvailable ? "Settings, update available" : "Settings")
                 HStack(spacing: 5) {
                     Image(systemName: "internaldrive").frame(width: 22, height: 22)
                     Text(freeSpaceText)

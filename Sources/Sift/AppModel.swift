@@ -36,6 +36,22 @@ final class AppModel: ObservableObject {
     var isUpdating: Bool { if case .downloading = updateState { return true }; return false }
     var hasAvailableUpdate: Bool { latestUpdateRelease != nil && !isUpdating }
     var installedVersion: String { updateService.currentVersion }
+    @Published var automaticallyInstallsUpdates: Bool {
+        didSet {
+            updatePreferences.set(automaticallyInstallsUpdates, forKey: "automaticallyInstallsUpdates.v1")
+            automaticInstallIdleSince = nil
+            if automaticallyInstallsUpdates {
+                beginAutomaticUpdateIfEligible()
+                scheduleAutomaticInstallation()
+            } else {
+                automaticInstallTask?.cancel()
+                automaticInstallTask = nil
+            }
+        }
+    }
+    var isPreparingUpdate: Bool { if case .preparing = updateState { return true }; return false }
+    var isUpdateReady: Bool { if case .ready = updateState { return true }; return false }
+    var updateReadyTitle: String { isUpdateReady ? "Restart to Update" : "Update & Relaunch" }
     @Published private(set) var availableDiskBytes: Int64?
     @Published private(set) var totalDiskBytes: Int64?
     @Published private(set) var diskHistory = DiskSpaceHistory(samples: (UserDefaults.standard.data(forKey: "diskSpaceHistory.v1")
@@ -69,15 +85,26 @@ final class AppModel: ObservableObject {
     private var checkingUpdates = false
     private var presentedPromptWasManual = false
     private var pendingManualUpdatePrompt = false
+    private var stagedUpdate: (release: UpdateRelease, app: URL)?
+    private var automaticInstallTask: Task<Void, Never>?
+    private var automaticInstallIdleSince: Date?
+    private let startsAutomaticInstallationTimer: Bool
+    private let updateWindowsAreOpen: @MainActor () -> Bool
 
     init(cleanup: CleanupExecution = .live, updates: UpdateExecution? = nil,
          updatePreferences: UserDefaults = .standard, showsUpdateWindows: Bool = true,
-         startsAutomaticUpdateChecks: Bool = true) {
+         startsAutomaticUpdateChecks: Bool = true, startsAutomaticInstallationTimer: Bool = true,
+         updateWindowsAreOpen: @escaping @MainActor () -> Bool = {
+             NSApp.windows.contains { $0.isVisible && ($0.canBecomeKey || $0.attachedSheet != nil) }
+         }) {
         self.cleanup = cleanup
         self.updates = updates ?? .live(service: UpdateService())
         self.updatesConfigured = updates != nil || UpdateService().repository != nil
         self.updatePreferences = updatePreferences
         self.showsUpdateWindows = showsUpdateWindows
+        self.startsAutomaticInstallationTimer = startsAutomaticInstallationTimer
+        self.updateWindowsAreOpen = updateWindowsAreOpen
+        self.automaticallyInstallsUpdates = updatePreferences.bool(forKey: "automaticallyInstallsUpdates.v1")
         self.updatePromptPolicy = updatePreferences.data(forKey: "updatePromptPolicy.v1")
             .flatMap { try? JSONDecoder().decode(UpdatePromptPolicy.self, from: $0) } ?? UpdatePromptPolicy()
         deletesImmediately = UserDefaults.standard.bool(forKey: "deleteGeneratedFoldersImmediately")
@@ -131,6 +158,7 @@ final class AppModel: ObservableObject {
     }
     @discardableResult private func beginCleanup(_ id: String, paths: [String] = []) -> Bool {
         guard !isUpdating, cleanupActivity.begin(id, paths: paths) else { return false }
+        automaticInstallIdleSince = nil
         if let release = presentedUpdateRelease {
             pendingManualUpdatePrompt = presentedPromptWasManual
             updatePromptPolicy.deferredForCleanup(release.version)
@@ -147,6 +175,7 @@ final class AppModel: ObservableObject {
             lastMessage = message + " Free-space changes include concurrent cleanups and other app activity."
         }
         cleanupActivity.finish(id)
+        beginAutomaticUpdateIfEligible()
         maybePresentUpdatePrompt()
         if needsRescan { rescanWhenIdle = true }
         if rescanWhenIdle, !isCleaning, !isScanning {
@@ -523,27 +552,31 @@ final class AppModel: ObservableObject {
             updateState = .unavailable
             return
         }
-        guard !isUpdating, !checkingUpdates else { return }
+        guard !isUpdating, !isPreparingUpdate, !isUpdateReady, !checkingUpdates else { return }
         checkingUpdates = true
         defer { checkingUpdates = false }
         // Retain the existing badge while a periodic background check runs.
         if latestUpdateRelease == nil { updateState = .checking }
         do {
             let release = try await updates.check()
-            guard !isUpdating else { return }
+            guard !isUpdating, !isPreparingUpdate, !isUpdateReady else { return }
             if let release {
                 updateState = .available(release)
             } else {
                 updateState = .upToDate(Date())
             }
         } catch {
-            guard !isUpdating else { return }
+            guard !isUpdating, !isPreparingUpdate, !isUpdateReady else { return }
             updateState = .failed(error.localizedDescription)
         }
     }
 
     func installUpdate(_ release: UpdateRelease) {
         guard canInstallUpdate(release) else { return }
+        if let stagedUpdate, stagedUpdate.release == release {
+            installStagedUpdate(stagedUpdate.app, release: release, automatic: false)
+            return
+        }
         updateState = .downloading(release)
         Task {
             do {
@@ -566,12 +599,71 @@ final class AppModel: ObservableObject {
 
     func canInstallUpdate(_ release: UpdateRelease) -> Bool {
         guard !isCleaning, !isUpdating, latestUpdateRelease == release else { return false }
-        switch updateState { case .available, .failed: return true; default: return false }
+        switch updateState { case .available, .ready, .failed: return true; default: return false }
+    }
+
+    private func beginAutomaticUpdateIfEligible() {
+        guard updatesConfigured, automaticallyInstallsUpdates, !isCleaning,
+              case let .available(release) = updateState,
+              updatePromptPolicy.allowsAutomaticUpdate(version: release.version, now: Date()) else { return }
+        // Background preparation is read-only and must not block cleanup.
+        updateState = .preparing(release)
+        Task { [weak self, updates] in
+            do {
+                let app = try await updates.download(release)
+                guard let self else { return }
+                self.stagedUpdate = (release, app)
+                self.updateState = .ready(release)
+            } catch {
+                self?.updateState = .failed("Could not prepare the automatic update: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func scheduleAutomaticInstallation() {
+        guard automaticallyInstallsUpdates, isUpdateReady, startsAutomaticInstallationTimer, automaticInstallTask == nil else { return }
+        automaticInstallTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled, let self, self.automaticallyInstallsUpdates, self.isUpdateReady else { return }
+                self.considerAutomaticUpdateInstallation()
+            }
+        }
+    }
+
+    /// Recheck every safety condition at the point of installation. A fresh
+    /// continuous idle minute is required after any interaction or cleanup.
+    func considerAutomaticUpdateInstallation(now: Date = Date()) {
+        guard automaticallyInstallsUpdates, let stagedUpdate,
+              updateState == .ready(stagedUpdate.release),
+              updatePromptPolicy.allowsAutomaticUpdate(version: stagedUpdate.release.version, now: now),
+              !isCleaning, !updateInteractionActive, presentedUpdateRelease == nil, !updateWindowsAreOpen() else {
+            automaticInstallIdleSince = nil
+            return
+        }
+        guard let since = automaticInstallIdleSince else { automaticInstallIdleSince = now; return }
+        guard now.timeIntervalSince(since) >= 60 else { return }
+        installStagedUpdate(stagedUpdate.app, release: stagedUpdate.release, automatic: true)
+    }
+
+    private func installStagedUpdate(_ app: URL, release: UpdateRelease, automatic: Bool) {
+        guard canInstallUpdate(release) else { return }
+        updateState = .downloading(release) // Reserve installation before launching the helper.
+        do { try updates.install(app) }
+        catch {
+            if let failure = error as? UpdateError, failure == .invalidApplication || failure == .invalidSignature {
+                stagedUpdate = nil // Retry must download a fresh bundle if staging was removed or changed.
+            }
+            // Never open a browser or steal focus after an automatic failure.
+            if !automatic, (error as? UpdateError) == .installLocationNotWritable { NSWorkspace.shared.open(release.releasePageURL) }
+            updateState = .failed("Could not install the update: \(error.localizedDescription). Retry from Settings.")
+        }
     }
 
     func setUpdatePromptContext(active: Bool, allowsPrompt: Bool) {
         updateInteractionActive = active
         updatePromptsAllowed = allowsPrompt
+        if active { automaticInstallIdleSince = nil }
         maybePresentUpdatePrompt()
     }
 
@@ -579,21 +671,20 @@ final class AppModel: ObservableObject {
         // This method is an explicit user action, including in a nonactivating
         // menu-bar panel whose focus notification has not arrived yet.
         updateInteractionActive = true
-        if case .failed = updateState, let release = latestUpdateRelease {
-            updateState = .available(release)
-        }
         pendingManualUpdatePrompt = true
         maybePresentUpdatePrompt()
         if !isCleaning, updateInteractionActive { updatePromptWindow?.present() }
     }
 
     func remindUpdateTomorrow(_ release: UpdateRelease, now: Date = Date()) {
+        automaticInstallIdleSince = nil
         updatePromptPolicy.remindTomorrow(release.version, now: now)
         saveUpdatePromptPolicy()
         closeUpdatePromptQuietly()
     }
 
     func skipUpdateVersion(_ release: UpdateRelease) {
+        automaticInstallIdleSince = nil
         updatePromptPolicy.skip(release.version)
         saveUpdatePromptPolicy()
         closeUpdatePromptQuietly()
@@ -604,6 +695,11 @@ final class AppModel: ObservableObject {
     }
 
     private func updateStateChanged() {
+        if !isUpdateReady {
+            automaticInstallTask?.cancel()
+            automaticInstallTask = nil
+            automaticInstallIdleSince = nil
+        }
         switch updateState {
         case let .available(release):
             latestUpdateRelease = release
@@ -613,13 +709,16 @@ final class AppModel: ObservableObject {
             closeUpdatePromptQuietly()
         default: break
         }
+        beginAutomaticUpdateIfEligible()
+        scheduleAutomaticInstallation()
         maybePresentUpdatePrompt()
     }
 
     private func maybePresentUpdatePrompt(now: Date = Date()) {
         guard updateInteractionActive, !isCleaning, !isUpdating, presentedUpdateRelease == nil,
-              let release = latestUpdateRelease, case .available = updateState,
-              pendingManualUpdatePrompt || (updatePromptsAllowed && updatePromptPolicy.shouldPresent(version: release.version, now: now)) else { return }
+              !isPreparingUpdate, let release = latestUpdateRelease,
+              pendingManualUpdatePrompt || (updatePromptsAllowed && (!automaticallyInstallsUpdates || isUpdateFailure)
+                  && updatePromptPolicy.shouldPresent(version: release.version, now: now)) else { return }
         presentedPromptWasManual = pendingManualUpdatePrompt
         pendingManualUpdatePrompt = false
         updatePromptPolicy.presented(release.version)
@@ -628,7 +727,7 @@ final class AppModel: ObservableObject {
         guard showsUpdateWindows else { return } // Deterministic, window-free tests.
         let controller = UpdatePromptWindow(model: self, release: release) { [weak self] userInitiated in
             guard let self, self.presentedUpdateRelease == release else { return }
-            if userInitiated, !self.isUpdating {
+            if userInitiated, !self.isUpdating, !self.automaticallyInstallsUpdates {
                 self.updatePromptPolicy.remindTomorrow(release.version, now: Date())
                 self.saveUpdatePromptPolicy()
             }
@@ -645,6 +744,9 @@ final class AppModel: ObservableObject {
         presentedUpdateRelease = nil
         controller?.closeQuietly()
     }
+
+    private var isUpdateFailure: Bool { if case .failed = updateState { return true }; return false }
+    func dismissUpdatePrompt() { closeUpdatePromptQuietly() }
 
     func openRelease(_ release: UpdateRelease) {
         NSWorkspace.shared.open(release.releasePageURL)

@@ -101,7 +101,9 @@ Sift requires macOS 14 Sonoma or newer.
 
 Use the gear in the bottom-left corner to add or remove scanned project folders, choose the worktree cleanup mode, see the installed version, or check for updates.
 
-Release builds check for updates on launch and every six hours. When an update is available, Sift shows a native update window while you are using the app, not over another app or during cleanup. Choose **Update & Relaunch**, **Remind Me Tomorrow**, or **Skip This Version**. Reminder and skip choices survive restarts; the gear badge and manual Update action remain available. Downloads and installation require your approval. Cleanup cannot start during an approved update, and installation cannot start while cleanup is running.
+Release builds check for updates on launch and every six hours. By default, Sift shows a native update window while you are using the app, not over another app or during cleanup. Choose **Update & Relaunch**, **Remind Me Tomorrow**, or **Skip This Version**. Reminder and skip choices survive restarts; the gear badge and manual Update action remain available.
+
+**Automatically install updates** is an optional setting, off by default, available in Settings and the update window. When enabled, Sift downloads and verifies updates in the background without blocking cleanup. An **Update ready** gear badge and **Restart to Update** action remain available. Automatic installation and relaunch require a continuous minute without an open Sift window or running cleanup; reopening Sift or starting cleanup resets the wait. There is no need to quit. Skip and reminder choices are respected. Turning the option off prevents automatic installation, even if a download is already in progress (that download may finish and remain available for manual installation). Failures appear in Settings and do not open a browser in the background. Cleanup cannot start during installation.
 
 ## What Sift cleans
 
@@ -128,7 +130,7 @@ Sift is designed around a narrow cleanup boundary:
 - Docker cleanup accepts only a local Unix socket and rejects remote Docker contexts.
 - Docker and global cache actions are clearly marked as permanent and require their own confirmation.
 
-Sift has no third-party runtime dependencies, analytics, or telemetry. It does not upload file paths, scan results, storage information, or identifiers. Release builds contact GitHub only to check for a newer version; an update is downloaded only after you choose to install it.
+Sift has no third-party runtime dependencies, analytics, or telemetry. It does not upload file paths, scan results, storage information, or identifiers. Release builds contact GitHub to check for updates and download them after you approve an update or opt in to automatic updates.
 
 ## Build from source
 

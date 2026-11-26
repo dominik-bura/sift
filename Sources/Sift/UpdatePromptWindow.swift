@@ -7,7 +7,7 @@ import SwiftUI
 
     init(model: AppModel, release: UpdateRelease, onClose: @escaping (Bool) -> Void) {
         self.onClose = onClose
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 380),
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 420),
                             styleMask: [.titled, .closable, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.title = "\(model.applicationName) Update"
         panel.isReleasedWhenClosed = false
@@ -45,7 +45,7 @@ struct UpdatePromptView: View {
             HStack(spacing: 13) {
                 Image(nsImage: applicationIcon ?? SiftAssets.applicationIcon).resizable().scaledToFit().frame(width: 48, height: 48)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("A new version is available").font(.headline)
+                    Text(model.isUpdateReady ? "Your update is ready" : "A new version is available").font(.headline)
                     Text("\(model.applicationName) \(model.installedVersion) → \(release.version)")
                         .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                 }
@@ -55,8 +55,18 @@ struct UpdatePromptView: View {
                     ProgressView().controlSize(.small)
                     Text("Downloading and verifying…").font(.callout)
                 }
-                Text("Sift will restart after verification finishes. Cleanup is paused until the update completes.")
+                Text("Sift will restart after verification finishes. Cleanup is unavailable while updating.")
                     .font(.caption).foregroundStyle(.secondary)
+            } else if model.isPreparingUpdate {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Downloading and verifying in the background…").font(.callout)
+                }
+                Text(model.automaticallyInstallsUpdates
+                     ? "You can continue cleaning. Installation waits until Sift has no open windows or running cleanups for a minute."
+                     : "Automatic installation is off. This download may finish, but you choose when to install it.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Continue Using Sift") { model.dismissUpdatePrompt() }
             } else {
                 Text("Install the latest improvements and fixes. Sift will quit and reopen after you approve the update.")
                     .font(.callout).foregroundStyle(.secondary)
@@ -68,7 +78,7 @@ struct UpdatePromptView: View {
                     Button("Skip This Version") { model.skipUpdateVersion(release) }
                         .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Update & Relaunch") { model.installUpdate(release) }
+                    Button(model.updateReadyTitle) { model.installUpdate(release) }
                         .buttonStyle(.borderedProminent).tint(SiftChartStyle.accent)
                         .keyboardShortcut(.defaultAction).disabled(!model.canInstallUpdate(release))
                 }
@@ -79,8 +89,14 @@ struct UpdatePromptView: View {
                         .keyboardShortcut(.cancelAction)
                 }
             }
+            if !model.isUpdating {
+                Toggle("Automatically install updates", isOn: $model.automaticallyInstallsUpdates)
+                    .toggleStyle(.checkbox).font(.caption)
+                Text("Restart only after a minute with no open Sift window or cleanup running.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }.padding(22).frame(width: 420, alignment: .leading)
-            .frame(minHeight: 380, alignment: .topLeading)
+            .frame(minHeight: 420, alignment: .topLeading)
     }
 }
 
@@ -96,6 +112,10 @@ struct UpdateInteractionMonitor: NSViewRepresentable {
         view.onChange = onChange
         view.notifyLater()
     }
+    static func dismantleNSView(_ view: MonitorView, coordinator: ()) {
+        let callback = view.onChange
+        DispatchQueue.main.async { callback?(false, true) }
+    }
     final class MonitorView: NSView {
         var allowsPrompt = true
         var onChange: ((Bool, Bool) -> Void)?
@@ -105,7 +125,7 @@ struct UpdateInteractionMonitor: NSViewRepresentable {
             for token in tokens { NotificationCenter.default.removeObserver(token) }
             tokens = []
             if let window {
-                for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+                for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, NSWindow.didChangeOcclusionStateNotification] {
                     tokens.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                         Task { @MainActor [weak self] in self?.notifyLater() }
                     })

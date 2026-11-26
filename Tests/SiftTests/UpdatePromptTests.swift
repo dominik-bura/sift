@@ -27,13 +27,13 @@ final class UpdatePromptTests: XCTestCase {
 
     @MainActor func testPromptLayoutFitsNativeWindowInBothAppearances() {
         let model = AppModel(showsUpdateWindows: false, startsAutomaticUpdateChecks: false)
-        for state in [UpdateState.available(release), .downloading(release), .failed("The update could not be downloaded. Please try again when your connection is available.")] {
+        for state in [UpdateState.available(release), .preparing(release), .ready(release), .downloading(release), .failed("The update could not be downloaded. Please try again when your connection is available.")] {
             model.updateState = state
             for scheme in [ColorScheme.light, .dark] {
                 let host = NSHostingView(rootView: UpdatePromptView(model: model, release: release, applicationIcon: NSImage(size: NSSize(width: 48, height: 48))).environment(\.colorScheme, scheme))
                 host.layoutSubtreeIfNeeded()
                 XCTAssertEqual(host.fittingSize.width, 420)
-                XCTAssertLessThanOrEqual(host.fittingSize.height, 380)
+                XCTAssertLessThanOrEqual(host.fittingSize.height, 420)
             }
         }
     }

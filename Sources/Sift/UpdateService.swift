@@ -17,6 +17,8 @@ enum UpdateState: Equatable, Sendable {
     case checking
     case upToDate(Date)
     case available(UpdateRelease)
+    case preparing(UpdateRelease)
+    case ready(UpdateRelease)
     case downloading(UpdateRelease)
     case failed(String)
 }
@@ -112,6 +114,11 @@ struct UpdateService: Sendable {
 
     @MainActor
     func launchInstaller(for stagedApp: URL) throws {
+        // Background preparation may precede installation by hours. Recheck
+        // the staged bundle instead of trusting files left in a temp folder.
+        guard let version = Bundle(url: stagedApp)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              Self.compareVersions(version, currentVersion) == .orderedDescending else { throw UpdateError.invalidApplication }
+        try validateApplication(at: stagedApp, expectedVersion: version)
         let currentApp = bundle.bundleURL.standardizedFileURL
         guard currentApp.pathExtension == "app",
               Self.isSupportedCurrentApplicationName(currentApp.lastPathComponent) else {

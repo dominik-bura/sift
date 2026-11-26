@@ -59,7 +59,7 @@ do {
         try fileManager.moveItem(at: staged, to: current)
         let opener = Process()
         opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        opener.arguments = [current.path]
+        opener.arguments = ["-g", current.path]
         try opener.run()
         opener.waitUntilExit()
         guard opener.terminationStatus == 0 else { throw UpdaterFailure.invalidBundle }
@@ -70,7 +70,7 @@ do {
         try? fileManager.moveItem(at: backup, to: current)
         let rollbackOpener = Process()
         rollbackOpener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        rollbackOpener.arguments = [current.path]
+        rollbackOpener.arguments = ["-g", current.path]
         try? rollbackOpener.run()
         throw error
     }
