@@ -88,7 +88,7 @@ final class AppModel: ObservableObject {
     var selectedConservativeBytes: Int64 { selectedCandidates.reduce(0) { $0 + $1.conservativeBytes } }
     var cleanableGlobalCaches: [GlobalCache] {
         globalCaches.filter { cache in
-            guard cache.includedInCleanAll, canCleanCache(cache) else { return false }
+            guard cache.includedInCleanAll, !cache.skippedByBulkCleanup(), canCleanCache(cache) else { return false }
             if case let .available(bytes, _) = cache.state { return bytes > 0 }
             return false
         }
@@ -478,7 +478,8 @@ final class AppModel: ObservableObject {
             name: cache.name,
             detail: cache.detail,
             symbolName: cache.symbolName,
-            state: state
+            state: state,
+            lastChanged: state == .checking ? cache.lastChanged : nil
         ))
     }
 

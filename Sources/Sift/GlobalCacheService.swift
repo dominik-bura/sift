@@ -6,6 +6,16 @@ struct GlobalCacheService: Sendable {
     private let regenerableCaches = RegenerableCacheService()
     private var fileManager: FileManager { .default }
 
+    static let otherPnpmStoresID = "pnpm-other-stores"
+
+    /// Used when a tool's cache exists but its executable is not in a location
+    /// Sift runs commands from: the fixed cache directory is emptied directly.
+    private static let directFallbacks: [String: RegenerableCacheDefinition] = [
+        "bun": .init(id: "bun", name: "Bun cache", relativePaths: [".bun/install/cache"], appNames: [],
+                     detail: "Clears downloaded package archives directly because no trusted bun executable was found",
+                     category: .packages, symbol: "hare.fill")
+    ]
+
     private struct Definition: Sendable {
         let id: String
         let name: String
@@ -33,23 +43,56 @@ struct GlobalCacheService: Sendable {
     }
 
     func inspectAll(onResult: @Sendable (GlobalCache) -> Void = { _ in }) -> [GlobalCache] {
-        var results: [GlobalCache] = []
-        for definition in definitions {
-            if let cache = inspect(definition) { results.append(cache); onResult(cache) }
+        // File-based sources are independent directory walks, so a few workers
+        // measure them while the package-manager commands run one after another.
+        // This keeps the inventory from slowing down as more sources are supported.
+        let fileBased = RegenerableCacheService.definitions
+        let slots = InspectionSlots(count: fileBased.count)
+        let regenerableCaches = regenerableCaches
+        return withoutActuallyEscaping(onResult) { onResult in
+            let fileBasedWork = DispatchGroup()
+            DispatchQueue.global(qos: .utility).async(group: fileBasedWork) {
+                DispatchQueue.concurrentPerform(iterations: min(3, fileBased.count)) { _ in
+                    while let index = slots.claimNext() {
+                        guard let cache = regenerableCaches.inspect(fileBased[index]) else { continue }
+                        slots.store(cache, at: index)
+                        onResult(cache)
+                    }
+                }
+            }
+            var results: [GlobalCache] = []
+            for definition in definitions {
+                guard let cache = inspect(definition) else { continue }
+                results.append(cache); onResult(cache)
+                if definition.id == "pnpm", let others = inspectOtherPnpmStores(activePath: cache.state.path) {
+                    results.append(others); onResult(others)
+                }
+            }
+            // The callback must not outlive this call.
+            fileBasedWork.wait()
+            return results + slots.caches
         }
-        for definition in RegenerableCacheService.definitions {
-            if let cache = regenerableCaches.inspect(id: definition.id) { results.append(cache); onResult(cache) }
-        }
-        return results
     }
 
     func inspect(id: String) -> GlobalCache? {
-        definitions.first(where: { $0.id == id }).flatMap(inspect) ?? regenerableCaches.inspect(id: id)
+        if id == Self.otherPnpmStoresID { return inspectOtherPnpmStores(activePath: activePnpmStorePath()) }
+        return definitions.first(where: { $0.id == id }).flatMap(inspect) ?? regenerableCaches.inspect(id: id)
+    }
+
+    func inspectAfterCleanup(id: String) -> GlobalCache? {
+        if id == Self.otherPnpmStoresID {
+            return inspectOtherPnpmStores(activePath: activePnpmStorePath(), reportEmpty: true)
+        }
+        if RegenerableCacheService.definition(id: id) != nil {
+            return regenerableCaches.inspectAfterCleanup(id: id)
+        }
+        return inspect(id: id)
     }
 
     func installedPlaceholders() -> [GlobalCache] {
         let tools = definitions.compactMap { definition -> GlobalCache? in
-            guard TrustedExecutable.find(definition.executable) != nil else { return nil }
+            guard TrustedExecutable.find(definition.executable) != nil
+                    || Self.directFallbacks[definition.id].map(regenerableCaches.hasMatches) == true else { return nil }
             return GlobalCache(
                 id: definition.id,
                 name: definition.name,
@@ -59,8 +102,8 @@ struct GlobalCacheService: Sendable {
             )
         }
         let local = RegenerableCacheService.definitions.compactMap { definition -> GlobalCache? in
-            guard definition.relativePaths.contains(where: { fileManager.fileExists(atPath: NSHomeDirectory() + "/" + $0) }) else { return nil }
-            return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: "app.badge", state: .checking)
+            guard regenerableCaches.hasMatches(definition) else { return nil }
+            return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: definition.symbol, state: .checking)
         }
         return tools + local
     }
@@ -69,13 +112,19 @@ struct GlobalCacheService: Sendable {
         if id == "uv", ProcessInfo.processInfo.environment["UV_LINK_MODE"] == "symlink" {
             throw GlobalCacheError.failed("uv symlink mode depends on cache files. Change the link mode and recreate environments before clearing this cache.")
         }
-        if RegenerableCacheService.definitions.contains(where: { $0.id == id }) {
+        if id == Self.otherPnpmStoresID {
+            try cleanOtherPnpmStores()
+            return
+        }
+        if RegenerableCacheService.definition(id: id) != nil {
             try regenerableCaches.clean(id: id)
             return
         }
-        guard let definition = definitions.first(where: { $0.id == id }),
-              let executable = TrustedExecutable.find(definition.executable) else {
-            throw GlobalCacheError.unavailable
+        guard let definition = definitions.first(where: { $0.id == id }) else { throw GlobalCacheError.unavailable }
+        guard let executable = TrustedExecutable.find(definition.executable) else {
+            guard let fallback = Self.directFallbacks[id] else { throw GlobalCacheError.unavailable }
+            try regenerableCaches.clean(fallback)
+            return
         }
         guard let current = inspect(definition), case .available = current.state else {
             throw GlobalCacheError.failed("The cache location could not be safely verified")
@@ -144,8 +193,10 @@ struct GlobalCacheService: Sendable {
     }
 
     private func inspect(_ definition: Definition) -> GlobalCache? {
-        guard let executable = TrustedExecutable.find(definition.executable) else { return nil }
-        let path: String
+        guard let executable = TrustedExecutable.find(definition.executable) else {
+            return Self.directFallbacks[definition.id].flatMap(regenerableCaches.inspect)
+        }
+        var path: String
         if let fixed = definition.fixedPath(NSHomeDirectory()) {
             path = fixed
         } else if let arguments = definition.pathArguments {
@@ -174,6 +225,11 @@ struct GlobalCacheService: Sendable {
                 return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: definition.symbol, state: .failed(Self.safeError(result.error)))
             }
             path = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            // `npm cache clean` only clears the content cache. Measuring the whole
+            // npm folder would also count npx packages and logs it leaves behind.
+            if definition.id == "npm", path.hasPrefix("/") {
+                path = URL(fileURLWithPath: path, isDirectory: true).appendingPathComponent("_cacache", isDirectory: true).path
+            }
         } else {
             return nil
         }
@@ -192,10 +248,12 @@ struct GlobalCacheService: Sendable {
                                    symbolName: definition.symbol, state: .failed(error.localizedDescription))
             }
         }
-        guard let bytes = allocatedSize(of: validated) else {
+        guard let measurement = DirectoryMeasurement.measure(validated.resolvingSymlinksInPath()) else {
             return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: definition.symbol,
                                state: .failed("Could not measure cache; check permissions"))
         }
+        let bytes = measurement.bytes
+        let lastChanged = bytes > 0 ? measurement.newestChange : nil
         if definition.id == "uv" {
             let holders = uvLockProcesses.holders(cachePath: validated.path)
             if !holders.isEmpty {
@@ -204,11 +262,77 @@ struct GlobalCacheService: Sendable {
                     name: definition.name,
                     detail: definition.detail,
                     symbolName: definition.symbol,
-                    state: .blocked(bytes: bytes, path: validated.path, processCount: holders.count)
+                    state: .blocked(bytes: bytes, path: validated.path, processCount: holders.count),
+                    lastChanged: lastChanged
                 )
             }
         }
-        return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: definition.symbol, state: .available(bytes: bytes, path: validated.path))
+        return GlobalCache(id: definition.id, name: definition.name, detail: definition.detail, symbolName: definition.symbol,
+                           state: .available(bytes: bytes, path: validated.path), lastChanged: lastChanged)
+    }
+
+    // MARK: - Other pnpm stores
+
+    private func activePnpmStorePath() -> String? {
+        guard let executable = TrustedExecutable.find("pnpm"),
+              let result = try? runInTemporaryDirectory(named: "Sift-pnpm-inspect", executable: executable,
+                                                        arguments: ["store", "path"], timeout: 10),
+              result.exitCode == 0 else { return nil }
+        return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Every pnpm major release writes a new `v<number>` store next to the old
+    /// one, and `pnpm store prune` only touches the store of the pnpm that runs it.
+    private func otherPnpmStores(activePath: String?) throws -> [URL] {
+        guard let activePath, let active = validatedCachePath(activePath) else {
+            throw GlobalCacheError.failed("Could not verify the active pnpm store")
+        }
+        return try PnpmStoreLayout.otherStores(besides: active).filter { validatedCachePath($0.path) != nil }
+    }
+
+    private func inspectOtherPnpmStores(activePath: String?, reportEmpty: Bool = false) -> GlobalCache? {
+        let name = "Other pnpm stores"
+        let stores: [URL]
+        do {
+            stores = try otherPnpmStores(activePath: activePath)
+            if stores.isEmpty, reportEmpty, let activePath {
+                let active = URL(fileURLWithPath: activePath)
+                guard try PnpmStoreLayout.versionStores(besides: active).isEmpty else {
+                    throw GlobalCacheError.failed("pnpm stores with global virtual-store links were retained; remaining size is unknown")
+                }
+                return GlobalCache(id: Self.otherPnpmStoresID, name: name, detail: "No other versioned stores remain", symbolName: "shippingbox",
+                                   state: .available(bytes: 0, path: active.deletingLastPathComponent().path))
+            }
+        } catch {
+            return GlobalCache(id: Self.otherPnpmStoresID, name: name, detail: "Could not verify other pnpm stores", symbolName: "shippingbox",
+                               state: .failed(error.localizedDescription))
+        }
+        guard let first = stores.first else { return nil }
+        let detail = "\(stores.count) other store version\(stores.count == 1 ? "" : "s"); stores with global virtual-store links are excluded"
+        var total = DirectoryMeasurement()
+        for store in stores {
+            guard let measurement = DirectoryMeasurement.measure(store) else {
+                return GlobalCache(id: Self.otherPnpmStoresID, name: name, detail: detail, symbolName: "shippingbox",
+                                   state: .failed("Could not measure cache; check permissions"))
+            }
+            total.add(measurement)
+        }
+        return GlobalCache(id: Self.otherPnpmStoresID, name: name, detail: detail, symbolName: "shippingbox",
+                           state: .available(bytes: total.bytes, path: first.path),
+                           lastChanged: total.bytes > 0 ? total.newestChange : nil)
+    }
+
+    private func cleanOtherPnpmStores() throws {
+        guard let activePath = activePnpmStorePath() else { throw GlobalCacheError.unavailable }
+        for store in try otherPnpmStores(activePath: activePath) {
+            // Recheck immediately before removal: the store must still be a real
+            // versioned directory beside the active one, never the active store.
+            guard try PnpmStoreLayout.otherStores(besides: URL(fileURLWithPath: activePath, isDirectory: true)).contains(store),
+                  validatedCachePath(store.path) != nil else {
+                throw GlobalCacheError.failed("Cache location changed during cleanup")
+            }
+            try fileManager.removeItem(at: store)
+        }
     }
 
     private func validatedCachePath(_ rawPath: String) -> URL? {
@@ -220,25 +344,6 @@ struct GlobalCacheService: Sendable {
         return url
     }
 
-    private func allocatedSize(of directory: URL) -> Int64? {
-        if !fileManager.fileExists(atPath: directory.path) { return 0 }
-        let keys: Set<URLResourceKey> = [
-            .isRegularFileKey,
-            .fileAllocatedSizeKey,
-            .totalFileAllocatedSizeKey,
-            .mayShareFileContentKey
-        ]
-        var failed = false
-        guard let enumerator = fileManager.enumerator(at: directory, includingPropertiesForKeys: Array(keys), options: [], errorHandler: { _, _ in failed = true; return true }) else { return nil }
-        var total: Int64 = 0
-        while let file = enumerator.nextObject() as? URL {
-            guard let values = try? file.resourceValues(forKeys: keys) else { failed = true; continue }
-            guard values.isRegularFile == true else { continue }
-            total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
-        }
-        return failed ? nil : total
-    }
-
     private static func safeError(_ raw: String) -> String {
         let normalized = raw.lowercased()
         if normalized.contains("timed out") { return "Cleanup timed out" }
@@ -247,6 +352,66 @@ struct GlobalCacheService: Sendable {
             return "Cache is in use by another uv process"
         }
         return "Cleanup command failed"
+    }
+}
+
+/// Hands out definition indexes to concurrent workers and keeps results in definition order.
+private final class InspectionSlots: @unchecked Sendable {
+    private let lock = NSLock()
+    private var next = 0
+    private var stored: [GlobalCache?]
+
+    init(count: Int) { stored = Array(repeating: nil, count: count) }
+
+    func claimNext() -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        guard next < stored.count else { return nil }
+        defer { next += 1 }
+        return next
+    }
+    func store(_ cache: GlobalCache, at index: Int) {
+        lock.lock(); defer { lock.unlock() }
+        stored[index] = cache
+    }
+    var caches: [GlobalCache] {
+        lock.lock(); defer { lock.unlock() }
+        return stored.compactMap { $0 }
+    }
+}
+
+enum PnpmStoreLayout {
+    static func isVersionDirectoryName(_ name: String) -> Bool {
+        name.count > 1 && name.hasPrefix("v") && name.dropFirst().allSatisfy(\.isASCII) && name.dropFirst().allSatisfy(\.isNumber)
+    }
+
+    /// Versioned store directories beside the active one. Symbolic links and
+    /// anything not named `v<number>` are never returned.
+    static func otherStores(besides active: URL, fileManager: FileManager = .default) throws -> [URL] {
+        try versionStores(besides: active, fileManager: fileManager).filter { store in
+            // A pnpm global virtual store lives at <store>/links. Its packages
+            // may still be symlinked by projects using another pnpm version.
+            // Preserve it even if unused: we cannot prove external references.
+            do {
+                _ = try fileManager.attributesOfItem(atPath: store.appendingPathComponent("links").path)
+                return false
+            } catch where (error as? CocoaError)?.code == .fileReadNoSuchFile { return true }
+        }
+    }
+
+    static func versionStores(besides active: URL, fileManager: FileManager = .default) throws -> [URL] {
+        let active = active.standardizedFileURL
+        guard isVersionDirectoryName(active.lastPathComponent) else { return [] }
+        let root = active.deletingLastPathComponent()
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
+        let entries: [URL]
+        do { entries = try fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: keys) }
+        catch where (error as? CocoaError)?.code == .fileReadNoSuchFile { return [] }
+        return try entries.filter { entry in
+            guard isVersionDirectoryName(entry.lastPathComponent), entry.lastPathComponent != active.lastPathComponent else { return false }
+            let values = try entry.resourceValues(forKeys: Set(keys))
+            return values.isDirectory == true && values.isSymbolicLink != true
+        }.map { root.appendingPathComponent($0.lastPathComponent, isDirectory: true).standardizedFileURL }
+            .sorted { $0.path < $1.path }
     }
 }
 

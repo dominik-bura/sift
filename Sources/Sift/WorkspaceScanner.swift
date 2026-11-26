@@ -242,6 +242,7 @@ struct WorkspaceScanner: Sendable {
         ".pytest_cache", ".mypy_cache", ".ruff_cache", "__pycache__", ".svelte-kit", ".angular", ".vite",
         ".nx", ".nuxt", ".output", ".astro", ".docusaurus", ".expo", ".tox", ".nox",
         "target", ".gradle", ".dart_tool", ".build", "coverage", "Pods",
+        ".terraform", ".pnpm-store",
         "Library", ".Trash"
     ]
 

@@ -52,7 +52,7 @@ struct CleanupExecution: Sendable {
     var inspectDocker: @Sendable () async -> DockerState
     static var live: Self {
         Self(cleanCache: { try GlobalCacheService().clean(id: $0) },
-             inspectCache: { GlobalCacheService().inspect(id: $0) },
+             inspectCache: { GlobalCacheService().inspectAfterCleanup(id: $0) },
              pruneDocker: { try DockerService().pruneUnusedData() },
              inspectDocker: { DockerService().status() })
     }

@@ -4,6 +4,8 @@ struct CleanupKind: Hashable, Sendable {
     let directoryName: String
     let label: String
     let symbolName: String
+    /// Shown next to the folder when removing it has a consequence beyond a rebuild.
+    var note: String? = nil
 
     static let supported: [CleanupKind] = [
         .init(directoryName: "node_modules", label: "Node dependencies", symbolName: "shippingbox"),
@@ -32,7 +34,10 @@ struct CleanupKind: Hashable, Sendable {
         .init(directoryName: ".dart_tool", label: "Dart tool cache", symbolName: "wrench.and.screwdriver"),
         .init(directoryName: ".build", label: "Swift build output", symbolName: "swift"),
         .init(directoryName: "coverage", label: "Coverage reports", symbolName: "chart.bar"),
-        .init(directoryName: "Pods", label: "CocoaPods dependencies", symbolName: "shippingbox")
+        .init(directoryName: "Pods", label: "CocoaPods dependencies", symbolName: "shippingbox"),
+        .init(directoryName: ".terraform", label: "Terraform providers and modules", symbolName: "square.stack.3d.down.right",
+              note: "Needs terraform init afterwards · the selected workspace resets to default"),
+        .init(directoryName: ".pnpm-store", label: "Project pnpm store", symbolName: "shippingbox.fill")
     ]
 
     static let byDirectoryName = Dictionary(uniqueKeysWithValues: supported.map { ($0.directoryName, $0) })
@@ -128,6 +133,9 @@ struct GlobalCache: Identifiable, Equatable, Sendable {
     let detail: String
     let symbolName: String
     let state: State
+    /// Newest modification date found inside the cache. This is a write time,
+    /// not a last-use time: reading a cached file does not update it.
+    var lastChanged: Date? = nil
 
     var bytes: Int64 {
         if case let .available(bytes, _) = state { return bytes }
@@ -145,8 +153,42 @@ struct GlobalCache: Identifiable, Equatable, Sendable {
     var onlyPrunesUnusedData: Bool {
         id == "pnpm" || id == "homebrew" || id == "simulators"
     }
-    // Provider plugins and unavailable simulator devices are explicit opt-ins.
-    var includedInCleanAll: Bool { id != "pulumi" && id != "simulators" }
+    // Provider plugins, unavailable simulator devices, other pnpm stores, and
+    // file-based sources that opt out are explicit individual reviews.
+    var includedInCleanAll: Bool {
+        if let definition = RegenerableCacheService.definition(id: id) { return definition.includedInCleanAll }
+        return id != "pulumi" && id != "simulators" && id != GlobalCacheService.otherPnpmStoresID
+    }
+    /// Sources whose folders are removed entirely, so a later inspection finds nothing.
+    var disappearsWhenEmpty: Bool {
+        if id == GlobalCacheService.otherPnpmStoresID { return true }
+        return RegenerableCacheService.definition(id: id)?.targets.contains { $0.removal == .item } == true
+    }
+
+    /// A cache written within this window is probably still in use.
+    static let recentChangeInterval: TimeInterval = 14 * 86_400
+
+    func changedRecently(now: Date = Date()) -> Bool {
+        guard let lastChanged else { return false }
+        return now.timeIntervalSince(lastChanged) < Self.recentChangeInterval
+    }
+    /// Clearing a cache that is still being written mostly causes the same
+    /// data to download again, so bulk cleanup leaves it for individual review.
+    /// Prune-only sources keep what is in use and are unaffected.
+    func skippedByBulkCleanup(now: Date = Date()) -> Bool {
+        // Leftovers with their own age rule (update downloads, job logs) are
+        // not caches in use: whatever is still recent was already left out.
+        if RegenerableCacheService.definition(id: id)?.minimumAge != nil { return false }
+        return !onlyPrunesUnusedData && changedRecently(now: now)
+    }
+    func lastChangedLabel(now: Date = Date()) -> String? {
+        guard let lastChanged, bytes > 0 else { return nil }
+        if now.timeIntervalSince(lastChanged) < 60 { return "Changed just now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.unitsStyle = .full
+        return "Changed " + formatter.localizedString(for: lastChanged, relativeTo: now)
+    }
 
     var reclaimableBytes: Int64 {
         onlyPrunesUnusedData ? 0 : bytes

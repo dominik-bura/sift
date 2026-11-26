@@ -6,7 +6,7 @@
 
 <p align="center"><strong>A native macOS menu-bar app for safely reclaiming developer storage.</strong></p>
 
-Sift finds regenerable files across Git worktrees—such as `node_modules`, `.next`, and `.venv`—and lets you remove them without deleting your projects. It also shows reclaimable Docker images and common global developer caches in one place.
+Sift finds regenerable files across Git worktrees—such as `node_modules`, `.next`, `.venv`, and `.terraform`—and lets you remove them without deleting your projects. It also shows reclaimable Docker images and common global developer caches in one place.
 
 ## Highlights
 
@@ -14,12 +14,14 @@ Sift finds regenerable files across Git worktrees—such as `node_modules`, `.ne
 - Displays scan results progressively, with selection at the global, worktree, and folder level
 - Moves generated project folders to macOS Trash by default, with an optional permanent mode
 - Cleans unused Docker images and build cache without touching containers or volumes
-- Supports global uv, pnpm, Bun, Yarn, npm, Go, and Homebrew caches
+- Supports global uv, pnpm, Bun, Yarn, npm, npx, pip, Go, and Homebrew caches, including pnpm stores left behind by other pnpm versions
 - Runs entirely on your Mac with no analytics or telemetry
 - Includes built-in update checks from the app's Settings panel
 - Opens macOS Storage Settings from Sift’s settings for the broader disk breakdown
 - Shows system swap and app process-group resident memory, with normal quit requests
-- Supports Pulumi plugin cache, Xcode DerivedData, selected app caches, and unavailable simulator cleanup
+- Supports Pulumi plugin cache, Xcode DerivedData and documentation, simulator caches, Docker Scout, Playwright browsers, and unavailable simulator cleanup
+- Clears the web caches of common Electron apps, editors, and browsers, plus leftover app update downloads, without touching sign-ins or app data
+- Shows when each cache last changed and keeps caches that are still in use out of bulk cleanup
 
 ## Storage, memory, and cleanup
 
@@ -37,15 +39,24 @@ The header reports actual macOS free disk space. After a cleanup, a separate obs
 
 Generated-folder selections stay deselected by default. The worktree **Selection** menu includes an age-based shortcut using folder modification dates, not last-use dates; review and the normal cleanup confirmation are still required. The footer only offers a destructive action after folders are selected. There is no automatic deletion or history retention policy.
 
-Independent cleanup sources can run in parallel, including Docker, separate caches, and a selected worktree-folder batch. Each source has its own busy state; duplicate operations and overlapping ancestor/descendant paths (including known symlink aliases) are blocked. **Clean eligible…** starts independent source jobs and skips already-busy or conflicting sources, while plugins, simulators, and blocked caches retain their individual-review rules. Failures remain visible on their source even if another job succeeds. Jobs continue when the menu closes. Whole-inventory refresh waits until cleanup is idle, and results from scans begun before a cleanup cannot overwrite its newer state. Free-space changes are Mac-wide observations and may include concurrent cleanups or other activity; do not add them as per-job savings.
+Independent cleanup sources can run in parallel, including Docker, separate caches, and a selected worktree-folder batch. Each source has its own busy state; duplicate operations and overlapping ancestor/descendant paths (including known symlink aliases) are blocked. **Clean eligible…** starts independent source jobs and skips already-busy or conflicting sources, while plugins, simulators, blocked caches, and caches changed in the last 14 days retain their individual-review rules. Failures remain visible on their source even if another job succeeds. Jobs continue when the menu closes. Whole-inventory refresh waits until cleanup is idle, and results from scans begun before a cleanup cannot overwrite its newer state. Free-space changes are Mac-wide observations and may include concurrent cleanups or other activity; do not add them as per-job savings.
 
 Additional cleanup uses narrow boundaries:
 
 - Pulumi removes downloaded plugins via its CLI; required versions may download again. Infrastructure state and credentials remain excluded.
 - Xcode cleanup clears only default DerivedData. Archives, SDKs, and installed simulator runtimes remain excluded.
-- Dia, Codex, and Spark cleanup clears specific Library cache directories only. Known running apps must quit first. App support data, conversations, profiles, and worktrees are excluded.
+- Dia, Codex, Spark, Helium, Firefox, and Spotify cleanup clears specific Library cache directories only. Known running apps must quit first. App support data, conversations, profiles, offline downloads, and worktrees are excluded.
+- VS Code, VS Code Insiders, Cursor, Kiro, Antigravity, Notion, Miro, Slack, Claude, Capacities, and Postman cleanup empties only `Cache`, `Code Cache`, and `GPUCache` (also inside `Partitions/*`); editors additionally clear `CachedData`, `CachedExtensionVSIXs`, and `logs`. `Service Worker`, `WebStorage`, `IndexedDB`, `Local Storage`, `workspaceStorage`, settings, and extensions are never listed. The app must quit first. Caches of apps in daily use grow back, so the gain is temporary.
+- App update downloads covers `*-updater` and `*.ShipIt` folders in `~/Library/Caches` and `*-updater` in `~/Library/Application Support/Caches`. Anything changed in the last 24 hours is kept because it may be a pending update.
+- Developer tool caches are emptied in place: Docker Scout analysis results, the simulator dyld cache, Xcode's documentation cache, virtualenv seed wheels, node-gyp headers, and AzCopy job logs older than a day (transfer plans are kept). Playwright browsers require individual confirmation because tests fail until `playwright install` runs again.
+- npm's row measures only `_cacache`, which is what `npm cache clean` clears; npx packages in `~/.npm/_npx` are a separate source. When no trusted `bun` executable is found, the default Bun cache is emptied directly, and the Bun cache bundled with Reflex is its own source.
+- **Other pnpm stores** lists `v<number>` store directories beside the store the installed pnpm reports. `pnpm store prune` never touches them. They are removed entirely and require individual confirmation. Stores containing a `links` entry are excluded, including symlink markers, because pnpm's global virtual store can still back existing projects through symlinks even when another pnpm version is installed. Other store files are hard-linked or cloned into normal project-local `node_modules` and can be downloaded again when needed. The cleaner repeats this exclusion immediately before removal.
+- `.terraform` and project-local `.pnpm-store` folders are offered per worktree. Removing `.terraform` requires `terraform init` before the next plan, re-supplying any `-backend-config` values, and resets the selected workspace to `default`; state files beside it are never touched.
+- Wildcard paths never match symbolic links, a literal cache path that is a link fails closed, and only the exact listed directories are emptied.
+- Unreadable wildcard parents fail inspection and cleanup rather than appearing absent. After cleanup, zero bytes is reported only after successful measurement or verified absence. Failed discovery or age-skipped recent items do not prove stored bytes were removed; the remaining size stays unknown and the retained-items or access warning remains visible.
 - Simulator cleanup uses `simctl delete unavailable` against the same device set used for measurement. The row measures only device directories explicitly reported as unavailable by `simctl`, not all simulator storage. It deletes unavailable device data permanently and preserves available devices and installed runtimes. Listing or measurement failures are shown as errors, not as an empty cache; attributed bytes are not guaranteed disk-space savings.
-- Pulumi plugins and simulator devices require individual confirmation and are excluded from **Clean eligible…**, as are blocked caches. Bulk confirmation names the eligible sources before executing anything.
+- Pulumi plugins, simulator devices, Playwright browsers, and other pnpm stores require individual confirmation and are excluded from **Clean eligible…**, as are blocked caches. Bulk confirmation names the eligible sources before executing anything.
+- Each measured cache shows when it last changed. This is the newest modification date inside the cache, not a last-use date. A cache changed in the last 14 days is probably still in use, so clearing it mostly causes the same data to download again: **Clean eligible…** skips it, while its own **Clean…** button stays available. Prune-only sources are unaffected.
 
 VM disks, personal files, downloads, and agent conversations are inspectable in Storage and Finder, but Sift does not delete them through these new cleanup actions. Storage snapshots contain local paths and sizes, remain on the Mac, and are never uploaded.
 

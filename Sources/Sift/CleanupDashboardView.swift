@@ -26,7 +26,7 @@ struct CleanupDashboardView: View {
                 Button("Clean eligible…") { onCleanEligible() }
                     .font(.caption.weight(.medium)).buttonStyle(.plain).foregroundStyle(SiftChartStyle.accent)
                     .disabled(eligibleCount == 0)
-                    .help("Review \(eligibleCount) eligible cleanup sources. Plugins, simulators, and blocked caches are excluded.")
+                    .help("Review \(eligibleCount) eligible cleanup sources. Plugins, simulators, blocked caches, and caches changed in the last 14 days are excluded.")
             }
             VStack(spacing: 0) {
                 ForEach(Array(visibleCategories.enumerated()), id: \.element.id) { index, category in
@@ -124,9 +124,14 @@ struct CleanupDashboardView: View {
                 Button {
                     if expanded { expandedRows.remove(cache.id) } else { expandedRows.insert(cache.id) }
                 } label: {
-                    HStack(spacing: 4) {
-                        Text(cache.name).font(.callout.weight(.medium)).lineLimit(1)
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 8)).foregroundStyle(SiftChartStyle.mutedText)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 4) {
+                            Text(cache.name).font(.callout.weight(.medium)).lineLimit(1)
+                            Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 8)).foregroundStyle(SiftChartStyle.mutedText)
+                        }
+                        if let changed = cache.lastChangedLabel() {
+                            Text(changed).font(.caption2).foregroundStyle(SiftChartStyle.mutedText).lineLimit(1)
+                        }
                     }.contentShape(Rectangle())
                 }.buttonStyle(.plain).help("Show cleanup details and cache location")
                     .accessibilityValue(expanded ? "Expanded" : "Collapsed")
@@ -166,8 +171,12 @@ struct CleanupDashboardView: View {
                     if let path = cache.state.path { Text(path).textSelection(.enabled) }
                     if cache.onlyPrunesUnusedData { Text("Stored size is not the amount Prune will remove.") }
                     if !cache.includedInCleanAll { Text("Requires individual review · excluded from bulk cleanup.") }
+                    else if cache.skippedByBulkCleanup() { Text("Changed in the last 14 days, so it is probably still in use and would download again · skipped by Clean eligible.") }
+                    if cache.lastChangedLabel() != nil { Text("Age is the newest modification date in the cache, not last use.") }
                     if case let .failed(message) = cache.state { Text(message).foregroundStyle(.orange) }
                 }.font(.caption2).foregroundStyle(SiftChartStyle.secondaryText)
+                    // Explanations wrap instead of truncating when the panel is short.
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 12).padding(.bottom, 12)
             }
         }

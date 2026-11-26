@@ -406,6 +406,9 @@ struct ContentView: View {
                                     Text(candidate.url.lastPathComponent).font(.callout.weight(.medium))
                                     Text(relativeParent(candidate, workspace: workspace)).font(.caption2).foregroundStyle(SiftChartStyle.mutedText)
                                         .lineLimit(1).truncationMode(.middle)
+                                    if let note = candidate.kind.note {
+                                        Text(note).font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                                    }
                                 }
                                 Spacer()
                                 Text(ByteFormatting.string(candidate.allocatedBytes))
@@ -709,9 +712,9 @@ private enum CleanupConfirmation: Equatable {
             return "Pruning is permanent and uses only the local Docker Engine. Unused images and build cache are removed; active images, containers, and volumes remain untouched."
         case .allGlobals:
             let names = model.cleanableGlobalCaches.map(\.name) + (model.dockerState.reclaimableBytes > 0 && !model.isCleaningDocker ? ["Docker unused data"] : [])
-            return "Eligible sources: \(names.joined(separator: ", ")). Cleanup is permanent. Plugins, simulators, and blocked caches are excluded. Docker containers and volumes, app profiles, and conversations remain protected. Stored sizes are not guaranteed savings."
+            return "Eligible sources: \(names.joined(separator: ", ")). Cleanup is permanent. Plugins, simulators, blocked caches, and caches changed in the last 14 days are excluded. Docker containers and volumes, app profiles, and conversations remain protected. Stored sizes are not guaranteed savings."
         case let .global(id):
-            if let cache = model.globalCaches.first(where: { $0.id == id }), id == "simulators" || id == "pulumi" || RegenerableCacheService.definitions.contains(where: { $0.id == id }) {
+            if let cache = model.globalCaches.first(where: { $0.id == id }), id == "simulators" || id == "pulumi" || id == GlobalCacheService.otherPnpmStoresID || RegenerableCacheService.definition(id: id) != nil {
                 return "\(cache.detail). Cleanup is permanent. The displayed size is folder-attributed storage, not guaranteed freed space."
             }
             if id == "uv" {

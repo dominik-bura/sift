@@ -10,12 +10,13 @@ enum CacheCategory: String, CaseIterable, Identifiable {
         switch self {
         case .packages: "Package-manager caches and downloaded dependencies"
         case .apps: "App caches only · profiles and conversations stay protected"
-        case .developerTools: "Build data, provider plugins, simulators, and Docker"
+        case .developerTools: "Build data, tool downloads, provider plugins, simulators, and Docker"
         }
     }
     static func containing(_ cache: GlobalCache) -> Self {
-        switch cache.id {
-        case "uv", "pnpm", "bun", "yarn", "npm", "homebrew": .packages
+        if let definition = RegenerableCacheService.definition(id: cache.id) { return definition.category }
+        return switch cache.id {
+        case "uv", "pnpm", "bun", "yarn", "npm", "homebrew", GlobalCacheService.otherPnpmStoresID: .packages
         case "dia-cache", "codex-cache", "spark-cache": .apps
         default: .developerTools
         }
