@@ -13,6 +13,7 @@ struct CleanupDashboardView: View {
     var reviewCacheID: String? = nil
     var blockedCacheIDs: Set<String> = []
     var cleanupErrors: [String: String] = [:]
+    var updateInProgress = false
     @State var expandedCategories: Set<CacheCategory> = []
     @State var expandedRows = Set<String>()
 
@@ -236,7 +237,7 @@ struct CleanupDashboardView: View {
                 else if let estimate = inventory.dockerEstimate {
                     if estimate > 0 {
                         Text("Up to \(ByteFormatting.string(estimate))").font(.caption.monospacedDigit()).foregroundStyle(SiftChartStyle.secondaryText)
-                        Button("Clean…") { onDocker() }.buttonStyle(SiftQuietButtonStyle())
+                        Button("Clean…") { onDocker() }.buttonStyle(SiftQuietButtonStyle()).disabled(updateInProgress)
                     } else { Text("Empty").font(.caption2).foregroundStyle(SiftChartStyle.mutedText) }
                 }
             }

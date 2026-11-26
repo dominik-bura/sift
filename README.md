@@ -101,6 +101,8 @@ Sift requires macOS 14 Sonoma or newer.
 
 Use the gear in the bottom-left corner to add or remove scanned project folders, choose the worktree cleanup mode, see the installed version, or check for updates.
 
+Release builds check for updates on launch and every six hours. When an update is available, Sift shows a native update window while you are using the app, not over another app or during cleanup. Choose **Update & Relaunch**, **Remind Me Tomorrow**, or **Skip This Version**. Reminder and skip choices survive restarts; the gear badge and manual Update action remain available. Downloads and installation require your approval. Cleanup cannot start during an approved update, and installation cannot start while cleanup is running.
+
 ## What Sift cleans
 
 | Area | Cleanup behavior |

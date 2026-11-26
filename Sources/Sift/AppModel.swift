@@ -28,7 +28,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var lastCleanupObservation: CleanupObservation?
     @Published var lastSyncedAt: Date?
     @Published var searchRoots: [URL]
-    @Published var updateState: UpdateState = .idle
+    @Published var updateState: UpdateState = .idle {
+        didSet { updateStateChanged() }
+    }
+    @Published private(set) var latestUpdateRelease: UpdateRelease?
+    @Published private(set) var presentedUpdateRelease: UpdateRelease?
+    var isUpdating: Bool { if case .downloading = updateState { return true }; return false }
+    var hasAvailableUpdate: Bool { latestUpdateRelease != nil && !isUpdating }
+    var installedVersion: String { updateService.currentVersion }
     @Published private(set) var availableDiskBytes: Int64?
     @Published private(set) var totalDiskBytes: Int64?
     @Published private(set) var diskHistory = DiskSpaceHistory(samples: (UserDefaults.standard.data(forKey: "diskSpaceHistory.v1")
@@ -50,9 +57,29 @@ final class AppModel: ObservableObject {
     private var rescanWhenIdle = false
     private var globalCacheRevision = 0
     private let cleanup: CleanupExecution
+    private let updates: UpdateExecution
+    private let updatesConfigured: Bool
+    private let updatePreferences: UserDefaults
+    private let showsUpdateWindows: Bool
+    private let updatePolicyKey = "updatePromptPolicy.v1"
+    private var updatePromptPolicy: UpdatePromptPolicy
+    private var updatePromptWindow: UpdatePromptWindow?
+    private var updateInteractionActive = false
+    private var updatePromptsAllowed = true
+    private var checkingUpdates = false
+    private var presentedPromptWasManual = false
+    private var pendingManualUpdatePrompt = false
 
-    init(cleanup: CleanupExecution = .live) {
+    init(cleanup: CleanupExecution = .live, updates: UpdateExecution? = nil,
+         updatePreferences: UserDefaults = .standard, showsUpdateWindows: Bool = true,
+         startsAutomaticUpdateChecks: Bool = true) {
         self.cleanup = cleanup
+        self.updates = updates ?? .live(service: UpdateService())
+        self.updatesConfigured = updates != nil || UpdateService().repository != nil
+        self.updatePreferences = updatePreferences
+        self.showsUpdateWindows = showsUpdateWindows
+        self.updatePromptPolicy = updatePreferences.data(forKey: "updatePromptPolicy.v1")
+            .flatMap { try? JSONDecoder().decode(UpdatePromptPolicy.self, from: $0) } ?? UpdatePromptPolicy()
         deletesImmediately = UserDefaults.standard.bool(forKey: "deleteGeneratedFoldersImmediately")
         if Bundle.main.bundleIdentifier == "com.dominikbura.sift" {
             Self.migrateLegacyDefaultsIfNeeded()
@@ -68,9 +95,9 @@ final class AppModel: ObservableObject {
         globalCaches = globalCacheService.installedPlaceholders()
         lastSyncedAt = UserDefaults.standard.object(forKey: lastSyncedKey) as? Date
         refreshDiskSpace()
-        if updateService.repository == nil {
+        if !updatesConfigured {
             updateState = .unavailable
-        } else {
+        } else if startsAutomaticUpdateChecks {
             Task { [weak self] in
                 await self?.checkForUpdates()
                 while !Task.isCancelled {
@@ -88,22 +115,28 @@ final class AppModel: ObservableObject {
     var selectedConservativeBytes: Int64 { selectedCandidates.reduce(0) { $0 + $1.conservativeBytes } }
     var cleanableGlobalCaches: [GlobalCache] {
         globalCaches.filter { cache in
-            guard cache.includedInCleanAll, !cache.skippedByBulkCleanup(), canCleanCache(cache) else { return false }
+            guard !isUpdating, cache.includedInCleanAll, !cache.skippedByBulkCleanup(), canCleanCache(cache) else { return false }
             if case let .available(bytes, _) = cache.state { return bytes > 0 }
             return false
         }
     }
     var cleanableGlobalStorageCount: Int {
-        cleanableGlobalCaches.count + (dockerState.reclaimableBytes > 0 && !isCleaningDocker ? 1 : 0)
+        cleanableGlobalCaches.count + (dockerState.reclaimableBytes > 0 && !isCleaningDocker && !isUpdating ? 1 : 0)
     }
     func canCleanCache(_ cache: GlobalCache) -> Bool {
-        cleanupActivity.canStart("cache:" + cache.id, paths: cache.state.path.map { [$0] } ?? [])
+        !isUpdating && cleanupActivity.canStart("cache:" + cache.id, paths: cache.state.path.map { [$0] } ?? [])
     }
     var canCleanSelected: Bool {
-        !selectedCandidates.isEmpty && cleanupActivity.canStart("worktrees", paths: selectedCandidates.map { $0.url.path })
+        !isUpdating && !selectedCandidates.isEmpty && cleanupActivity.canStart("worktrees", paths: selectedCandidates.map { $0.url.path })
     }
     @discardableResult private func beginCleanup(_ id: String, paths: [String] = []) -> Bool {
-        guard cleanupActivity.begin(id, paths: paths) else { return false }
+        guard !isUpdating, cleanupActivity.begin(id, paths: paths) else { return false }
+        if let release = presentedUpdateRelease {
+            pendingManualUpdatePrompt = presentedPromptWasManual
+            updatePromptPolicy.deferredForCleanup(release.version)
+            saveUpdatePromptPolicy()
+            closeUpdatePromptQuietly()
+        }
         cleanupErrors[id] = nil
         globalCacheRevision += 1
         if isScanning { rescanWhenIdle = true }
@@ -114,6 +147,7 @@ final class AppModel: ObservableObject {
             lastMessage = message + " Free-space changes include concurrent cleanups and other app activity."
         }
         cleanupActivity.finish(id)
+        maybePresentUpdatePrompt()
         if needsRescan { rescanWhenIdle = true }
         if rescanWhenIdle, !isCleaning, !isScanning {
             rescanWhenIdle = false
@@ -485,31 +519,40 @@ final class AppModel: ObservableObject {
     }
 
     func checkForUpdates() async {
-        guard updateService.repository != nil else {
+        guard updatesConfigured else {
             updateState = .unavailable
             return
         }
-        if case .downloading = updateState { return }
-        updateState = .checking
+        guard !isUpdating, !checkingUpdates else { return }
+        checkingUpdates = true
+        defer { checkingUpdates = false }
+        // Retain the existing badge while a periodic background check runs.
+        if latestUpdateRelease == nil { updateState = .checking }
         do {
-            if let release = try await updateService.checkForUpdate() {
+            let release = try await updates.check()
+            guard !isUpdating else { return }
+            if let release {
                 updateState = .available(release)
             } else {
                 updateState = .upToDate(Date())
             }
         } catch {
+            guard !isUpdating else { return }
             updateState = .failed(error.localizedDescription)
         }
     }
 
     func installUpdate(_ release: UpdateRelease) {
-        guard case .available = updateState else { return }
+        guard canInstallUpdate(release) else { return }
         updateState = .downloading(release)
-        let service = updateService
         Task {
             do {
-                let stagedApp = try await service.downloadAndStage(release)
-                try service.launchInstaller(for: stagedApp)
+                let stagedApp = try await updates.download(release)
+                guard !isCleaning, updateState == .downloading(release) else {
+                    updateState = .available(release)
+                    return
+                }
+                try updates.install(stagedApp)
             } catch {
                 if (error as? UpdateError) == .installLocationNotWritable {
                     NSWorkspace.shared.open(release.releasePageURL)
@@ -519,6 +562,85 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+    }
+
+    func canInstallUpdate(_ release: UpdateRelease) -> Bool {
+        guard !isCleaning, !isUpdating, latestUpdateRelease == release else { return false }
+        switch updateState { case .available, .failed: return true; default: return false }
+    }
+
+    func setUpdatePromptContext(active: Bool, allowsPrompt: Bool) {
+        updateInteractionActive = active
+        updatePromptsAllowed = allowsPrompt
+        maybePresentUpdatePrompt()
+    }
+
+    func requestUpdatePrompt() {
+        if case .failed = updateState, let release = latestUpdateRelease {
+            updateState = .available(release)
+        }
+        pendingManualUpdatePrompt = true
+        maybePresentUpdatePrompt()
+        if !isCleaning, updateInteractionActive { updatePromptWindow?.present() }
+    }
+
+    func remindUpdateTomorrow(_ release: UpdateRelease, now: Date = Date()) {
+        updatePromptPolicy.remindTomorrow(release.version, now: now)
+        saveUpdatePromptPolicy()
+        closeUpdatePromptQuietly()
+    }
+
+    func skipUpdateVersion(_ release: UpdateRelease) {
+        updatePromptPolicy.skip(release.version)
+        saveUpdatePromptPolicy()
+        closeUpdatePromptQuietly()
+    }
+
+    private func saveUpdatePromptPolicy() {
+        if let data = try? JSONEncoder().encode(updatePromptPolicy) { updatePreferences.set(data, forKey: updatePolicyKey) }
+    }
+
+    private func updateStateChanged() {
+        switch updateState {
+        case let .available(release):
+            latestUpdateRelease = release
+            if let current = presentedUpdateRelease, current != release { closeUpdatePromptQuietly() }
+        case .upToDate, .unavailable:
+            latestUpdateRelease = nil
+            closeUpdatePromptQuietly()
+        default: break
+        }
+        maybePresentUpdatePrompt()
+    }
+
+    private func maybePresentUpdatePrompt(now: Date = Date()) {
+        guard updateInteractionActive, !isCleaning, !isUpdating, presentedUpdateRelease == nil,
+              let release = latestUpdateRelease, case .available = updateState,
+              pendingManualUpdatePrompt || (updatePromptsAllowed && updatePromptPolicy.shouldPresent(version: release.version, now: now)) else { return }
+        presentedPromptWasManual = pendingManualUpdatePrompt
+        pendingManualUpdatePrompt = false
+        updatePromptPolicy.presented(release.version)
+        saveUpdatePromptPolicy()
+        presentedUpdateRelease = release
+        guard showsUpdateWindows else { return } // Deterministic, window-free tests.
+        let controller = UpdatePromptWindow(model: self, release: release) { [weak self] userInitiated in
+            guard let self, self.presentedUpdateRelease == release else { return }
+            if userInitiated, !self.isUpdating {
+                self.updatePromptPolicy.remindTomorrow(release.version, now: Date())
+                self.saveUpdatePromptPolicy()
+            }
+            self.presentedUpdateRelease = nil
+            self.updatePromptWindow = nil
+        }
+        updatePromptWindow = controller
+        controller.present()
+    }
+
+    private func closeUpdatePromptQuietly() {
+        let controller = updatePromptWindow
+        updatePromptWindow = nil
+        presentedUpdateRelease = nil
+        controller?.closeQuietly()
     }
 
     func openRelease(_ release: UpdateRelease) {

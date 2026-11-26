@@ -75,6 +75,9 @@ struct ContentView: View {
         // nested glass doesn't turn the whole panel into a silver-gray plate.
         .background(colorScheme == .dark ? Color.black.opacity(0.28) : Color.white.opacity(0.08))
         .tint(SiftTheme.accent)
+        .background(UpdateInteractionMonitor(allowsPrompt: !showSettings && confirmation == nil) { active, allowed in
+            model.setUpdatePromptContext(active: active, allowsPrompt: allowed)
+        })
         .onAppear {
             model.refreshDiskSpace()
             model.scanIfStale()
@@ -232,7 +235,8 @@ struct ContentView: View {
             onStopUV: { confirmation = .stopUVProcesses($0) },
             reviewCacheID: reviewedCacheID,
             blockedCacheIDs: Set(model.globalCaches.filter { !model.canCleanCache($0) }.map(\.id)),
-            cleanupErrors: model.cleanupErrors
+            cleanupErrors: model.cleanupErrors,
+            updateInProgress: model.isUpdating
         )
     }
 
@@ -575,13 +579,22 @@ struct ContentView: View {
             .lineLimit(2)
             Spacer(minLength: 6)
             switch model.updateState {
-            case .idle, .upToDate, .failed:
+            case .idle, .upToDate:
                 Button("Check now") { Task { await model.checkForUpdates() } }
                     .controlSize(.small)
+            case .failed:
+                if model.hasAvailableUpdate {
+                    Button("Retry update") { model.requestUpdatePrompt() }
+                        .controlSize(.small).disabled(model.isCleaning)
+                } else {
+                    Button("Check now") { Task { await model.checkForUpdates() } }.controlSize(.small)
+                }
             case let .available(release):
                 VStack(alignment: .trailing, spacing: 3) {
-                    Button("Update") { confirmation = .update(release) }
+                    Button("Update") { model.requestUpdatePrompt() }
                         .buttonStyle(.borderedProminent).controlSize(.small)
+                        .disabled(model.isCleaning)
+                        .help(model.isCleaning ? "Available when cleanup finishes" : "Review and install this update")
                     Button("Release notes") { model.openRelease(release) }
                         .buttonStyle(.plain).font(.caption2).foregroundStyle(SiftChartStyle.secondaryText)
                 }
@@ -611,7 +624,7 @@ struct ContentView: View {
                     Image(systemName: "gearshape.fill")
                         .frame(width: 22, height: 22)
                         .overlay(alignment: .topTrailing) {
-                            if case .available = model.updateState {
+                            if model.hasAvailableUpdate {
                                 Circle()
                                     .fill(SiftTheme.accent)
                                     .frame(width: 7, height: 7)
@@ -655,8 +668,7 @@ struct ContentView: View {
     private var isInitialScan: Bool { model.isScanning && model.workspaces.isEmpty }
 
     private var updateAvailable: Bool {
-        if case .available = model.updateState { return true }
-        return false
+        model.hasAvailableUpdate
     }
 
     private var storageFreeFraction: Double {
