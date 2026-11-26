@@ -57,30 +57,37 @@ struct CleanupDashboardView: View {
         let measuring = caches.contains { $0.state == .checking } || (category == .developerTools && inventory.docker == .checking)
         let busy = caches.contains { cleaningIDs.contains($0.id) } || (category == .developerTools && cleaningDocker)
         let attention = caches.contains { cache in
+            if cache.hasPartialMeasurement { return true }
             if cleanupErrors["cache:" + cache.id] != nil { return true }
             if case .failed = cache.state { return true }
             return false
         } || (category == .developerTools && cleanupErrors["docker"] != nil)
         let count = caches.count + (category == .developerTools ? 1 : 0)
-        let missingSizes = caches.contains { switch $0.state { case .checking, .failed, .unavailable: true; default: false } }
+        let skippedCount = Set(caches.flatMap(\.skippedLocations).map(\.path)).count
+        let status = CleanupHierarchy.categoryStatus(skippedCount: skippedCount, busy: busy, measuring: measuring, attention: attention)
+        let missingSizes = caches.contains { cache in
+            if cache.hasPartialMeasurement { return true }
+            return switch cache.state { case .checking, .failed, .unavailable: true; default: false }
+        }
         return VStack(spacing: 0) {
             Button {
                 if expanded { expandedCategories.remove(category) } else { expandedCategories.insert(category) }
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: category.symbol).foregroundStyle(SiftChartStyle.accent).frame(width: 22)
+                    Image(systemName: category.symbol).font(.system(size: 15, weight: .medium)).foregroundStyle(SiftChartStyle.accent).frame(width: 22)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(category.rawValue).font(.callout.weight(.semibold))
-                        Text("\(count) source\(count == 1 ? "" : "s")\(busy ? " · cleaning" : measuring ? " · measuring" : attention ? " · needs attention" : "")")
+                        Text(category.rawValue).font(.system(size: 14, weight: .semibold))
+                        Text("\(count) source\(count == 1 ? "" : "s")\(status.isEmpty ? "" : " · " + status)")
                             .font(.caption2).foregroundStyle(SiftChartStyle.mutedText)
                     }
                     Spacer()
-                    if measuring || busy { ProgressView().controlSize(.small) }
-                    else if attention { Image(systemName: "exclamationmark.circle").foregroundStyle(.orange) }
-                    Text(categorySizeLabel(category, missingSizes: missingSizes, measuring: measuring))
-                        .font(.caption.monospacedDigit()).foregroundStyle(SiftChartStyle.secondaryText)
-                        .multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: 150, alignment: .trailing)
+                    HStack(spacing: 6) {
+                        if measuring || busy { ProgressView().controlSize(.small) }
+                        else if attention { Image(systemName: "exclamationmark.circle").foregroundStyle(.orange) }
+                        Text(categorySizeLabel(category, missingSizes: missingSizes, measuring: measuring))
+                            .font(.caption.monospacedDigit()).foregroundStyle(SiftChartStyle.secondaryText)
+                            .multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
+                    }.frame(maxWidth: 150, alignment: .trailing)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .medium)).foregroundStyle(SiftChartStyle.mutedText)
                 }.padding(.horizontal, 12).padding(.vertical, 10).contentShape(Rectangle())
             }.buttonStyle(.plain)
@@ -88,18 +95,31 @@ struct CleanupDashboardView: View {
             if expanded {
                 VStack(spacing: 0) {
                     Text(category.detail).font(.caption2).foregroundStyle(SiftChartStyle.secondaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.bottom, 10)
-                    ForEach(caches) { cache in
-                        Divider().overlay(SiftChartStyle.rule).padding(.horizontal, 12)
-                        cacheRow(cache).id("cache-" + cache.id)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 44).padding(.trailing, 12).padding(.bottom, 8)
+                    VStack(spacing: 0) {
+                        ForEach(Array(caches.enumerated()), id: \.element.id) { index, cache in
+                            if index > 0 { sourceDivider }
+                            cacheRow(cache).id("cache-" + cache.id)
+                        }
+                        if category == .developerTools {
+                            if !caches.isEmpty { sourceDivider }
+                            dockerRow
+                        }
                     }
-                    if category == .developerTools {
-                        Divider().padding(.horizontal, 12)
-                        dockerRow
+                    .padding(.leading, CleanupHierarchy.sourceInset)
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(SiftChartStyle.rule).frame(width: 1)
+                            .padding(.leading, CleanupHierarchy.sourceInset).padding(.vertical, 8)
+                            .allowsHitTesting(false)
                     }
-                }
+                }.padding(.bottom, 6)
             }
         }
+    }
+
+    private var sourceDivider: some View {
+        Divider().overlay(SiftChartStyle.rule)
+            .padding(.leading, CleanupHierarchy.sourceTextInset).padding(.trailing, 12)
     }
 
     private func categorySizeLabel(_ category: CacheCategory, missingSizes: Bool, measuring: Bool) -> String {
@@ -120,13 +140,13 @@ struct CleanupDashboardView: View {
         let expanded = expandedRows.contains(cache.id)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: cache.symbolName).font(.system(size: 13)).foregroundStyle(SiftChartStyle.accent).frame(width: 19)
+                Image(systemName: cache.symbolName).font(.system(size: 12)).foregroundStyle(SiftChartStyle.accent).frame(width: 16)
                 Button {
                     if expanded { expandedRows.remove(cache.id) } else { expandedRows.insert(cache.id) }
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 4) {
-                            Text(cache.name).font(.callout.weight(.medium)).lineLimit(1)
+                            Text(cache.name).font(.caption.weight(.medium)).lineLimit(1)
                             Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 8)).foregroundStyle(SiftChartStyle.mutedText)
                         }
                         if let changed = cache.lastChangedLabel() {
@@ -150,23 +170,31 @@ struct CleanupDashboardView: View {
                         Text("Unavailable").font(.caption2).foregroundStyle(SiftChartStyle.mutedText)
                     case let .available(bytes, _):
                         if bytes > 0 {
-                            Text("\(ByteFormatting.string(bytes)) stored").font(.caption.monospacedDigit()).foregroundStyle(SiftChartStyle.secondaryText)
+                            Text("\(ByteFormatting.string(bytes)) \(cache.hasPartialMeasurement ? "measured" : "stored")").font(.caption.monospacedDigit()).foregroundStyle(SiftChartStyle.secondaryText)
                             Button(cache.onlyPrunesUnusedData ? "Prune…" : "Clean…") { onClean(cache.id) }
                                 .buttonStyle(SiftQuietButtonStyle()).disabled(blockedCacheIDs.contains(cache.id))
-                        } else { Text("Empty").font(.caption2).foregroundStyle(SiftChartStyle.mutedText) }
+                        } else { Text(cache.hasPartialMeasurement ? "Skipped" : "Empty").font(.caption2).foregroundStyle(SiftChartStyle.mutedText) }
                     case .checking: EmptyView()
                     }
                 }
             }.padding(.horizontal, 12).padding(.vertical, 11)
+            if let summary = CleanupHierarchy.skippedSummary(cache.skippedLocations) {
+                Label(summary, systemImage: "exclamationmark.circle")
+                    .font(.caption2).foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, CleanupHierarchy.sourceTextInset).padding(.trailing, 12).padding(.bottom, 10)
+                    .help(cache.skippedLocations.map { "\($0.path) — \($0.reason)" }.joined(separator: "\n"))
+            }
             if let error = cleanupErrors["cache:" + cache.id] {
-                Text(error).font(.caption2).foregroundStyle(.orange).padding(.horizontal, 12).padding(.bottom, 8)
+                Text(error).font(.caption2).foregroundStyle(.orange).padding(.leading, CleanupHierarchy.sourceTextInset).padding(.trailing, 12).padding(.bottom, 8)
             }
             if case let .blocked(_, _, count) = cache.state {
                 Text("\(count) running uv command\(count == 1 ? " holds" : "s hold") the cache lock.")
-                    .font(.caption2).foregroundStyle(.orange).padding(.horizontal, 12).padding(.bottom, 8)
+                    .font(.caption2).foregroundStyle(.orange).padding(.leading, CleanupHierarchy.sourceTextInset).padding(.trailing, 12).padding(.bottom, 8)
             }
             if expanded {
                 VStack(alignment: .leading, spacing: 5) {
+                    Text("Cleanup details").font(.caption2.weight(.semibold)).foregroundStyle(.primary)
                     Text(cache.detail)
                     if let path = cache.state.path { Text(path).textSelection(.enabled) }
                     if cache.onlyPrunesUnusedData { Text("Stored size is not the amount Prune will remove.") }
@@ -174,10 +202,23 @@ struct CleanupDashboardView: View {
                     else if cache.skippedByBulkCleanup() { Text("Changed in the last 14 days, so it is probably still in use and would download again · skipped by Clean eligible.") }
                     if cache.lastChangedLabel() != nil { Text("Age is the newest modification date in the cache, not last use.") }
                     if case let .failed(message) = cache.state { Text(message).foregroundStyle(.orange) }
+                    if cache.hasPartialMeasurement {
+                        Text("Skipped locations are excluded from this size and left untouched by cleanup.")
+                        Text("SKIPPED LOCATIONS").font(.caption2.weight(.semibold)).padding(.top, 5)
+                        ForEach(cache.skippedLocations) { location in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(CleanupHierarchy.skippedName(location)).fontWeight(.medium)
+                                Text(location.path).font(.caption2.monospaced()).textSelection(.enabled)
+                                Text(CleanupHierarchy.shortReason(location)).foregroundStyle(.orange).help(location.reason)
+                            }
+                        }
+                    }
                 }.font(.caption2).foregroundStyle(SiftChartStyle.secondaryText)
                     // Explanations wrap instead of truncating when the panel is short.
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 12).padding(.bottom, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                    .background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.leading, CleanupHierarchy.sourceTextInset).padding(.trailing, 12).padding(.bottom, 12)
             }
         }
     }
@@ -185,9 +226,9 @@ struct CleanupDashboardView: View {
     private var dockerRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Image(systemName: "shippingbox.fill").foregroundStyle(SiftChartStyle.accent).frame(width: 19)
+                Image(systemName: "shippingbox.fill").font(.system(size: 12)).foregroundStyle(SiftChartStyle.accent).frame(width: 16)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Docker").font(.callout.weight(.medium))
+                    Text("Docker").font(.caption.weight(.medium))
                     Text("Cleanup estimate · not VM disk size").font(.caption2).foregroundStyle(SiftChartStyle.mutedText)
                 }
                 Spacer(minLength: 4)
@@ -218,7 +259,7 @@ struct CleanupInventoryCard: View {
                         Text(inventory.summaryBytes == 0 && inventory.isMeasuring ? "Measuring…" : ByteFormatting.string(inventory.summaryBytes))
                             .font(.system(size: 23, weight: .semibold)).monospacedDigit()
                         if inventory.summaryBytes > 0 || !inventory.isMeasuring {
-                            Text(inventory.includesDockerEstimate ? "incl. Docker estimate" : "stored").font(.caption).foregroundStyle(SiftChartStyle.secondaryText)
+                            Text(inventory.includesDockerEstimate ? "incl. Docker estimate" : inventory.hasUnmeasuredSources ? "measured" : "stored").font(.caption).foregroundStyle(SiftChartStyle.secondaryText)
                         }
                     }
                 }

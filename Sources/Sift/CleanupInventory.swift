@@ -44,7 +44,8 @@ struct CleanupInventory {
     var isMeasuring: Bool { worktreesUnmeasured || caches.contains { $0.state == .checking } }
     var hasUnmeasuredSources: Bool {
         worktreesUnmeasured || caches.contains {
-            switch $0.state { case .checking, .failed, .unavailable: true; default: false }
+            if $0.hasPartialMeasurement { return true }
+            return switch $0.state { case .checking, .failed, .unavailable: true; default: false }
         }
     }
     var segments: [Segment] {

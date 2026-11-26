@@ -43,16 +43,17 @@ final class CacheSafetyRegressionTests: XCTestCase {
         XCTAssertTrue(try PnpmStoreLayout.otherStores(besides: active).isEmpty)
     }
 
-    func testWildcardPermissionErrorsFailInspectionAndCleanup() throws {
+    func testWildcardPermissionErrorsAreExplicitlySkippedDuringInspectionAndCleanup() throws {
         let (directory, canary, service) = try updater()
         let parent = directory.deletingLastPathComponent()
         defer { try? files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path) }
         try files.setAttributes([.posixPermissions: 0o000], ofItemAtPath: parent.path)
         let definition = try XCTUnwrap(RegenerableCacheService.definition(id: "app-updaters"))
         XCTAssertTrue(service.hasMatches(definition), "Keep a placeholder for the failed inspection")
-        if case .failed = service.inspect(id: definition.id)?.state {} else { XCTFail("Permission error must not look absent") }
-        if case .failed = service.inspectAfterCleanup(id: definition.id)?.state {} else { XCTFail("Permission error must not look empty") }
-        XCTAssertThrowsError(try service.clean(id: definition.id))
+        XCTAssertTrue(service.inspect(id: definition.id)?.hasPartialMeasurement == true)
+        XCTAssertEqual(service.inspect(id: definition.id)?.skippedLocations.first?.path, parent.standardizedFileURL.path)
+        XCTAssertNil(service.inspectAfterCleanup(id: definition.id)?.measuredBytes, "Skipped is not empty")
+        XCTAssertNoThrow(try service.clean(id: definition.id))
         try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)
         XCTAssertTrue(files.fileExists(atPath: canary.path))
     }
@@ -118,7 +119,8 @@ final class CacheSafetyRegressionTests: XCTestCase {
         try files.setAttributes([.posixPermissions: 0o000], ofItemAtPath: parent.path)
         model.cleanGlobalCache(cache)
         try await waitForCleanup(model)
-        XCTAssertNotNil(model.cleanupErrors["cache:app-updaters"])
+        XCTAssertNil(model.cleanupErrors["cache:app-updaters"])
+        XCTAssertTrue(model.globalCaches.first?.hasPartialMeasurement == true)
         XCTAssertNil(model.globalCaches.first?.measuredBytes)
         XCTAssertFalse(model.lastMessage?.contains("stored size decreased") == true)
         try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)

@@ -142,14 +142,20 @@ struct RegenerableCacheService: Sendable {
         var total = DirectoryMeasurement()
         var firstPath: String?
         var retainedRecentItems = false
+        var skipped: [GlobalCache.SkippedLocation] = []
         do {
         for target in definition.targets {
-            for url in try matches(target) {
+            for url in try matches(target, onUnreadable: { url, error in
+                skipped.append(.init(path: url.path, reason: error.localizedDescription))
+            }) {
                 guard validated(url, target: target) else {
                     return cache(definition, state: .failed("Cache path could not be verified"))
                 }
-                guard let measurement = DirectoryMeasurement.measure(url, now: checkedAt) else {
-                    return cache(definition, state: .failed("Could not measure cache; check permissions"))
+                let measurement: DirectoryMeasurement
+                do { measurement = try DirectoryMeasurement.measureChecked(url, now: checkedAt) }
+                catch {
+                    skipped.append(.init(path: url.path, reason: error.localizedDescription))
+                    continue
                 }
                 if isTooRecent(measurement, definition: definition, now: checkedAt) {
                     retainedRecentItems = true
@@ -159,24 +165,27 @@ struct RegenerableCacheService: Sendable {
                 if firstPath == nil { firstPath = url.path }
             }
         }
-        } catch { return cache(definition, state: .failed("Could not enumerate cache; check permissions")) }
+        } catch { return cache(definition, state: .failed("Could not enumerate or verify cache: \(error.localizedDescription)"), skipped: skipped) }
         guard let firstPath else {
+            let prefix = definition.targets.first?.pattern.split(separator: "/").prefix { !$0.contains("*") }.joined(separator: "/") ?? ""
+            if !skipped.isEmpty {
+                return cache(definition, state: .available(bytes: 0, path: home.appendingPathComponent(prefix).path), skipped: skipped)
+            }
             guard reportEmpty else { return nil }
             if retainedRecentItems {
                 return cache(definition, state: .failed("Recent items were retained. No remaining stored-size measurement is available."))
             }
             // Zero is justified only after every target was enumerated and no
             // matches existed, not merely because normal inspection returned nil.
-            let prefix = definition.targets.first?.pattern.split(separator: "/").prefix { !$0.contains("*") }.joined(separator: "/") ?? ""
             return cache(definition, state: .available(bytes: 0, path: home.appendingPathComponent(prefix).path))
         }
         // Age-filtered inventory changes are not proof of removed bytes. Keep
         // the post-cleanup size unknown if recent matches were left behind.
         if reportEmpty, retainedRecentItems {
-            return cache(definition, state: .failed("Recent items were retained. No remaining stored-size measurement is available."))
+            return cache(definition, state: .failed("Recent items were retained. No remaining stored-size measurement is available."), skipped: skipped)
         }
         return cache(definition, state: .available(bytes: total.bytes, path: firstPath),
-                     lastChanged: total.bytes > 0 ? total.newestChange : nil)
+                     lastChanged: total.bytes > 0 ? total.newestChange : nil, skipped: skipped)
     }
 
     func clean(id: String) throws {
@@ -193,14 +202,13 @@ struct RegenerableCacheService: Sendable {
         }
         let checkedAt = now()
         for target in definition.targets {
-            for url in try matches(target) {
+            for url in try matches(target, onUnreadable: { _, _ in }) {
                 guard validated(url, target: target) else { throw GlobalCacheError.failed("Cache path could not be safely verified") }
-                if definition.minimumAge != nil {
-                    guard let measurement = DirectoryMeasurement.measure(url, now: checkedAt) else {
-                        throw GlobalCacheError.failed("Could not check how recently the cache changed")
-                    }
-                    if isTooRecent(measurement, definition: definition, now: checkedAt) { continue }
-                }
+                // Recheck the entire matched tree before deleting anything in
+                // it. If even one descendant is unreadable, leave this match
+                // untouched and continue with other independent matches.
+                guard let measurement = try? DirectoryMeasurement.measureChecked(url, now: checkedAt) else { continue }
+                if isTooRecent(measurement, definition: definition, now: checkedAt) { continue }
                 switch target.removal {
                 case .contents:
                     var isDirectory: ObjCBool = false
@@ -225,11 +233,13 @@ struct RegenerableCacheService: Sendable {
 
     /// Existing paths matching a target. Wildcard components skip symbolic links;
     /// a literal component that is a link is returned and then fails validation.
-    func matches(_ target: RegenerableCacheDefinition.Target) throws -> [URL] {
+    func matches(_ target: RegenerableCacheDefinition.Target,
+                 onUnreadable: ((URL, Error) -> Void)? = nil) throws -> [URL] {
         var current = [home]
         for component in target.pattern.split(separator: "/").map(String.init) {
             var next: [URL] = []
             for base in current {
+                do {
                 guard component.contains("*") else {
                     next.append(base.appendingPathComponent(component))
                     continue
@@ -251,8 +261,18 @@ struct RegenerableCacheService: Sendable {
                 let children = try FileManager.default.contentsOfDirectory(at: base, includingPropertiesForKeys: [.isSymbolicLinkKey])
                 for child in children.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
                     guard Self.matches(pattern: component, name: child.lastPathComponent) else { continue }
-                    guard try child.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { continue }
+                    do {
+                        guard try child.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { continue }
+                    } catch {
+                        guard let onUnreadable, Self.isAccessError(error) else { throw error }
+                        onUnreadable(child, error)
+                        continue
+                    }
                     next.append(base.appendingPathComponent(child.lastPathComponent))
+                }
+                } catch {
+                    guard let onUnreadable, Self.isAccessError(error) else { throw error }
+                    onUnreadable(base, error)
                 }
             }
             current = next
@@ -260,7 +280,20 @@ struct RegenerableCacheService: Sendable {
         return try current.filter { url in
             do { _ = try url.resourceValues(forKeys: [.isSymbolicLinkKey]); return true }
             catch where (error as? CocoaError)?.code == .fileReadNoSuchFile { return false }
+            catch {
+                guard let onUnreadable, Self.isAccessError(error) else { throw error }
+                onUnreadable(url, error)
+                return false
+            }
         }
+    }
+
+    private static func isAccessError(_ error: Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSPOSIXErrorDomain { return error.code == EACCES || error.code == EPERM }
+        if error.domain == NSCocoaErrorDomain, error.code == NSFileReadNoPermissionError { return true }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? Error { return isAccessError(underlying) }
+        return false
     }
 
     func validated(_ url: URL, target: RegenerableCacheDefinition.Target) -> Bool {
@@ -289,8 +322,10 @@ struct RegenerableCacheService: Sendable {
         return now.timeIntervalSince(newest) < minimumAge
     }
 
-    private func cache(_ definition: RegenerableCacheDefinition, state: GlobalCache.State, lastChanged: Date? = nil) -> GlobalCache {
+    private func cache(_ definition: RegenerableCacheDefinition, state: GlobalCache.State, lastChanged: Date? = nil,
+                       skipped: [GlobalCache.SkippedLocation] = []) -> GlobalCache {
         GlobalCache(id: definition.id, name: definition.name, detail: definition.detail,
-                    symbolName: definition.symbol, state: state, lastChanged: lastChanged)
+                    symbolName: definition.symbol, state: state, lastChanged: lastChanged,
+                    skippedLocations: Dictionary(grouping: skipped, by: \.path).compactMap { $0.value.first }.sorted { $0.path < $1.path })
     }
 }

@@ -479,7 +479,8 @@ final class AppModel: ObservableObject {
             detail: cache.detail,
             symbolName: cache.symbolName,
             state: state,
-            lastChanged: state == .checking ? cache.lastChanged : nil
+            lastChanged: state == .checking ? cache.lastChanged : nil,
+            skippedLocations: cache.skippedLocations
         ))
     }
 

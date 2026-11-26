@@ -114,6 +114,11 @@ enum DockerState: Equatable, Sendable {
 }
 
 struct GlobalCache: Identifiable, Equatable, Sendable {
+    struct SkippedLocation: Identifiable, Equatable, Sendable {
+        var id: String { path }
+        let path: String
+        let reason: String
+    }
     enum State: Equatable, Sendable {
         case checking
         case unavailable
@@ -136,6 +141,8 @@ struct GlobalCache: Identifiable, Equatable, Sendable {
     /// Newest modification date found inside the cache. This is a write time,
     /// not a last-use time: reading a cached file does not update it.
     var lastChanged: Date? = nil
+    var skippedLocations: [SkippedLocation] = []
+    var hasPartialMeasurement: Bool { !skippedLocations.isEmpty }
 
     var bytes: Int64 {
         if case let .available(bytes, _) = state { return bytes }
@@ -144,7 +151,8 @@ struct GlobalCache: Identifiable, Equatable, Sendable {
     }
 
     var measuredBytes: Int64? {
-        switch state {
+        guard !hasPartialMeasurement else { return nil }
+        return switch state {
         case let .available(bytes, _), let .blocked(bytes, _, _): bytes
         default: nil
         }
